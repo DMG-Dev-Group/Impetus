@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Impetus — Arquitetura do Sistema</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+  :root{
+    --bg: #0a0a0c;
+    --panel: #121215;
+    --panel-2: #17171b;
+    --line: rgba(255,255,255,.09);
+    --line-soft: rgba(255,255,255,.05);
+    --text: #f2f0ee;
+    --text-dim: rgba(242,240,238,.55);
+    --text-faint: rgba(242,240,238,.32);
+    --red: #c0181a;
+    --red-bright: #ff3b3f;
+    --red-dim: rgba(192,24,26,.16);
+    --mono: 'Space Mono', monospace;
+    --sans: 'Space Grotesk', sans-serif;
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family:var(--sans); }
+
+  body{
+    background-image:
+      linear-gradient(180deg, var(--red-dim), transparent 420px),
+      linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+    background-size: auto, 46px 46px, 46px 46px;
+    min-height: 100vh;
+  }
+
+  .wrap{ max-width: 1180px; margin: 0 auto; padding: 64px 28px 100px; }
+
+  header{ margin-bottom: 56px; }
+  .eyebrow{
+    font-family: var(--mono); font-size: .74rem; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--red-bright); display:flex; align-items:center; gap:10px; margin-bottom: 18px;
+  }
+  .eyebrow::before{ content:""; width:7px; height:7px; border-radius:50%; background: var(--red-bright); box-shadow: 0 0 10px var(--red-bright); }
+  h1{ font-size: clamp(2rem, 4.2vw, 3.1rem); margin: 0 0 14px; letter-spacing:-.01em; line-height:1.05; }
+  h1 span{ color: var(--red-bright); }
+  .sub{ color: var(--text-dim); font-size: 1.02rem; max-width: 640px; line-height:1.55; }
+
+  /* ================= DIAGRAM ================= */
+  .stage{
+    position: relative;
+    display: flex; flex-direction: column; align-items: stretch; gap: 0;
+  }
+
+  .row{ display:flex; justify-content:center; }
+
+  .node{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 20px 22px;
+    position: relative;
+  }
+  .node .tag{
+    font-family: var(--mono); font-size: .66rem; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--text-faint); margin-bottom: 8px; display:block;
+  }
+  .node h3{ margin: 0 0 6px; font-size: 1.05rem; font-weight: 600; }
+  .node p{ margin: 0; font-size: .84rem; color: var(--text-dim); line-height: 1.5; }
+
+  /* WhatsApp row */
+  .n-whatsapp{ width: 320px; text-align:center; }
+  .n-whatsapp .tag{ color: #4ade80; }
+  .n-whatsapp{ border-color: rgba(74,222,128,.25); }
+
+  /* Connector line pieces */
+  .link{ display:flex; justify-content:center; }
+  .link svg{ display:block; }
+
+  /* Central brain */
+  .n-brain{
+    width: 100%; max-width: 720px;
+    border-color: var(--red);
+    background: linear-gradient(180deg, rgba(192,24,26,.08), var(--panel) 60%);
+    box-shadow: 0 0 0 1px rgba(192,24,26,.12), 0 30px 60px -30px rgba(192,24,26,.35);
+  }
+  .n-brain .tag{ color: var(--red-bright); }
+  .n-brain h3{ font-size: 1.25rem; }
+  .brain-grid{
+    margin-top: 16px; display:grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  }
+  .brain-chip{
+    border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: rgba(255,255,255,.02);
+  }
+  .brain-chip .k{ font-family: var(--mono); font-size:.68rem; color: var(--text-faint); text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:4px; }
+  .brain-chip .v{ font-size:.82rem; color: var(--text); }
+  .brain-foot{
+    margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line);
+    font-family: var(--mono); font-size: .74rem; color: var(--text-faint); display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  }
+  .brain-foot b{ color: var(--red-bright); font-weight:400; }
+
+  /* Machines row */
+  .machines{
+    display:flex; justify-content:center; gap: 28px; flex-wrap: wrap; margin-top: 0;
+  }
+  .n-machine{
+    width: 250px;
+  }
+  .n-machine .tag{ color: #ffb703; }
+  .n-machine{ border-color: rgba(255,183,3,.2); }
+  .machine-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .dot{ width:8px; height:8px; border-radius:50%; background:#3ecf6e; box-shadow: 0 0 8px #3ecf6e; flex-shrink:0; }
+  .dot.off{ background: #555; box-shadow:none; }
+  .machine-list{ list-style:none; margin: 10px 0 0; padding:0; font-family: var(--mono); font-size: .74rem; color: var(--text-dim); display:flex; flex-direction:column; gap:6px; }
+  .machine-list li::before{ content:"› "; color: var(--red-bright); }
+
+  /* vertical connector */
+  .vline{ display:flex; justify-content:center; }
+  .vline svg{ display:block; }
+
+  /* fan connector to machines */
+  .fan{ width: 100%; max-width: 760px; margin: 0 auto; }
+
+  footer.note{
+    margin-top: 54px; padding-top: 26px; border-top: 1px solid var(--line);
+    font-size: .85rem; color: var(--text-dim); max-width: 760px; line-height:1.6;
+  }
+  footer.note b{ color: var(--text); }
+
+  .legend{ display:flex; gap: 22px; flex-wrap:wrap; margin-top: 46px; font-family: var(--mono); font-size: .74rem; color: var(--text-faint); }
+  .legend span{ display:flex; align-items:center; gap:8px; }
+  .swatch{ width:12px; height:12px; border-radius:3px; display:inline-block; }
+
+  @media (max-width: 720px){
+    .brain-grid{ grid-template-columns: 1fr 1fr; }
+    .n-whatsapp{ width: 100%; max-width: 320px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">impetus — mapa do sistema</div>
+    <h1>Uma entidade,<br><span>várias máquinas.</span></h1>
+    <p class="sub">Do pedido no WhatsApp até o arquivo real no disco: como as peças conversam entre si, e o que roda onde.</p>
+  </header>
+
+  <div class="stage">
+
+    <!-- WhatsApp -->
+    <div class="row">
+      <div class="node n-whatsapp">
+        <span class="tag">gateway · v1</span>
+        <h3>Você, no WhatsApp</h3>
+        <p>"zipa o projeto X" — linguagem natural, sem caminho, sem comando fixo.</p>
+      </div>
+    </div>
+
+    <div class="link">
+      <svg width="2" height="42" viewBox="0 0 2 42"><line x1="1" y1="0" x2="1" y2="42" stroke="rgba(255,255,255,.18)" stroke-width="2" stroke-dasharray="3 5"/></svg>
+    </div>
+
+    <!-- Central brain -->
+    <div class="row">
+      <div class="node n-brain">
+        <span class="tag">cérebro central · 1 instância, 24/7</span>
+        <h3>O Impetus</h3>
+        <p>Hospedado à parte (VPS sempre ligada) — nunca no PC de alguém do time.</p>
+        <div class="brain-grid">
+          <div class="brain-chip"><span class="k">Recebe</span><span class="v">Baileys (WhatsApp)</span></div>
+          <div class="brain-chip"><span class="k">Entende</span><span class="v">API Anthropic</span></div>
+          <div class="brain-chip"><span class="k">Roteia</span><span class="v">Servidor WebSocket</span></div>
+        </div>
+        <div class="brain-foot">
+          <span>hospedagem: <b>Oracle Cloud Always Free</b></span>
+          <span>conexão com agentes: <b>sempre de saída, iniciada por eles</b></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="vline">
+      <svg width="760" height="54" viewBox="0 0 760 54" fill="none">
+        <line x1="380" y1="0" x2="380" y2="16" stroke="rgba(255,255,255,.18)" stroke-width="2" stroke-dasharray="3 5"/>
+        <path d="M100 16 H660" stroke="rgba(255,255,255,.14)" stroke-width="1.5"/>
+        <line x1="380" y1="16" x2="380" y2="16" stroke="rgba(255,255,255,.18)" stroke-width="2"/>
+        <line x1="100" y1="16" x2="100" y2="54" stroke="rgba(255,255,255,.18)" stroke-width="2" stroke-dasharray="3 5"/>
+        <line x1="380" y1="16" x2="380" y2="54" stroke="rgba(255,255,255,.18)" stroke-width="2" stroke-dasharray="3 5"/>
+        <line x1="660" y1="16" x2="660" y2="54" stroke="rgba(255,255,255,.18)" stroke-width="2" stroke-dasharray="3 5"/>
+      </svg>
+    </div>
+
+    <!-- Machines -->
+    <div class="machines">
+      <div class="node n-machine">
+        <div class="machine-head">
+          <span class="tag" style="margin:0;">agente local</span>
+          <span class="dot" title="online"></span>
+        </div>
+        <h3>PC-Daniel</h3>
+        <p>Serviço em 2º plano — sem janela, sobe sozinho ao ligar a máquina.</p>
+        <ul class="machine-list">
+          <li>índice de pastas</li>
+          <li>simple-git</li>
+          <li>archiver + ignore</li>
+        </ul>
+      </div>
+
+      <div class="node n-machine">
+        <div class="machine-head">
+          <span class="tag" style="margin:0;">agente local</span>
+          <span class="dot" title="online"></span>
+        </div>
+        <h3>PC-Guilherme</h3>
+        <p>Mesma base de código do agente — nick próprio no pareamento.</p>
+        <ul class="machine-list">
+          <li>índice de pastas</li>
+          <li>simple-git</li>
+          <li>archiver + ignore</li>
+        </ul>
+      </div>
+
+      <div class="node n-machine" style="opacity:.55;">
+        <div class="machine-head">
+          <span class="tag" style="margin:0;">agente local</span>
+          <span class="dot off" title="offline — em sleep"></span>
+        </div>
+        <h3>PC-Migo</h3>
+        <p>Offline agora (máquina suspensa) — reconecta sozinho ao acordar.</p>
+        <ul class="machine-list">
+          <li>último índice em cache</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:#4ade80"></span> gateway (entrada do usuário)</span>
+    <span><span class="swatch" style="background:var(--red-bright)"></span> cérebro central (1 só, sempre online)</span>
+    <span><span class="swatch" style="background:#ffb703"></span> agente local (1 por máquina, online só quando ligada)</span>
+  </div>
+
+  <footer class="note">
+    <b>V2 do MVP</b> adiciona um segundo gateway (o dashboard <code>DMG_SaaS</code>) falando com o mesmo cérebro central — a caixa vermelha no meio não muda; só ganha mais uma porta de entrada. <b>Toda ação que pode causar dano ao sistema</b> passa por confirmação antes do agente local executar algo no disco.
+  </footer>
+
+</div>
+</body>
+</html>
