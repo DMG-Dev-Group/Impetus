@@ -3,7 +3,12 @@ import { Boom } from "@hapi/boom";
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
+  isJidGroup,
+  isJidUser,
+  isLidUser,
+  jidDecode,
   useMultiFileAuthState,
+  type WAMessageKey,
   type WASocket,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
@@ -24,6 +29,60 @@ export interface WhatsAppOptions {
 }
 
 /**
+ * Reduz um numero a uma forma unica e comparavel.
+ *
+ * Celulares brasileiros existem em duas formas que representam a MESMA linha:
+ * com e sem o "9" extra depois do DDD. O que a pessoa digita no `.env` e o que
+ * o WhatsApp entrega no `senderPn` nem sempre coincidem — visto na pratica:
+ *
+ *   .env      5598981908366   (55 + 98 + 9 + 81908366  = 13 digitos)
+ *   senderPn   559881908366   (55 + 98 +     81908366  = 12 digitos)
+ *
+ * Sao a mesma pessoa. Para comparar, os dois lados sao reduzidos a forma curta
+ * (sem o 9 extra), que e a unica das duas que existe para toda linha BR.
+ *
+ * Numeros de outros paises passam intactos: a regra so se aplica a `55` com 13
+ * digitos, onde o 9 apos o DDD e inequivocamente o digito extra de celular.
+ */
+export function canonicalizarNumero(bruto: string): string {
+  const digitos = bruto.replace(/\D/g, "");
+
+  if (digitos.length === 13 && digitos.startsWith("55") && digitos[4] === "9") {
+    // Remove so o 9 da posicao 4, preservando pais (55) e DDD.
+    return digitos.slice(0, 4) + digitos.slice(5);
+  }
+
+  return digitos;
+}
+
+/**
+ * Descobre o numero de telefone de quem mandou a mensagem.
+ *
+ * O WhatsApp migrou as conversas 1:1 para um identificador interno (`@lid`), que
+ * NAO e o numero: `122183615541479@lid` nao tem relacao visivel com a linha. Nesse
+ * formato, o numero real vem separado, no campo `senderPn` da chave.
+ *
+ * Retorna `null` quando nao ha numero confiavel a extrair (grupo, transmissao,
+ * newsletter, ou `@lid` sem `senderPn`). Quem chama trata `null` como "ignorar".
+ */
+export function extrairNumeroRemetente(key: WAMessageKey): string | null {
+  const remoteJid = key.remoteJid;
+  if (!remoteJid) return null;
+
+  // Grupos ficam de fora nesta fatia (remetente e conversa sao coisas distintas).
+  if (isJidGroup(remoteJid)) return null;
+
+  // Em conversa `@lid` o proprio remoteJid nao carrega o numero — o `senderPn` sim.
+  const jidComNumero = isLidUser(remoteJid) ? key.senderPn : remoteJid;
+
+  // Descarta o que nao for conversa com uma pessoa (status@broadcast, newsletter,
+  // ou um `@lid` que veio sem `senderPn` e portanto nao da para identificar).
+  if (!jidComNumero || !isJidUser(jidComNumero)) return null;
+
+  return jidDecode(jidComNumero)?.user ?? null;
+}
+
+/**
  * Conecta ao WhatsApp via Baileys e entrega ao `onCommand` apenas as mensagens
  * de texto vindas de numeros autorizados.
  *
@@ -35,7 +94,9 @@ export async function startWhatsApp(options: WhatsAppOptions): Promise<WASocket>
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();
 
-  const autorizados = new Set(options.allowedNumbers);
+  // Os autorizados sao canonicalizados uma vez, na subida: assim tanto faz se a
+  // pessoa digitou o numero com ou sem o 9 extra no `.env`.
+  const autorizados = new Set(options.allowedNumbers.map(canonicalizarNumero));
 
   const socket = makeWASocket({
     version,
@@ -88,11 +149,11 @@ export async function startWhatsApp(options: WhatsAppOptions): Promise<WASocket>
       const remoteJid = msg.key.remoteJid;
       if (!remoteJid) continue;
 
-      // Fatia 1 trata apenas conversas diretas. Grupos ficam de fora.
-      if (!remoteJid.endsWith("@s.whatsapp.net")) continue;
+      // Grupos, transmissoes e `@lid` sem numero identificavel devolvem null.
+      const numero = extrairNumeroRemetente(msg.key);
+      if (!numero) continue;
 
-      const numero = remoteJid.split("@")[0];
-      if (!autorizados.has(numero)) {
+      if (!autorizados.has(canonicalizarNumero(numero))) {
         // Silencio deliberado: nem responde, nem loga o conteudo.
         continue;
       }

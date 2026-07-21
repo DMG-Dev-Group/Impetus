@@ -70,13 +70,115 @@ Edite o `.env`:
 ```bash
 WS_PORT=8080
 PAIRING_SECRET=<o valor que você gerou no passo 2>
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=openai/gpt-oss-120b
 WHATSAPP_ALLOWED_NUMBERS=5598900000000,5598911111111
 ```
+
+> **`GROQ_API_KEY` e `GROQ_MODEL` são novidade da Fatia 2.** Se você
+> instalou o Impetus antes dela, são as únicas variáveis que precisa acrescentar
+> ao `.env` que já existe — as outras três continuam iguais. Veja como obtê-las
+> logo abaixo.
+>
+> **Histórico de provedores** (se você configurou o Impetus em versões
+> anteriores): a interpretação já usou `ANTHROPIC_API_KEY` (Anthropic) e depois
+> `OPENROUTER_API_KEY` (OpenRouter). **Ambas podem ser removidas** — o Impetus
+> passou a usar o Groq, e essas variáveis não são mais lidas. A troca foi feita
+> porque o Groq tem tier gratuito muito mais generoso (ver o limite abaixo).
 
 **Sobre `WHATSAPP_ALLOWED_NUMBERS`:** números separados por vírgula, formato
 internacional, **só dígitos** — sem `+`, sem espaço, sem parêntese, sem traço.
 Um número brasileiro fica `55` + DDD + número. Quem não estiver nessa lista é
 ignorado em silêncio.
+
+> **Celular brasileiro: tanto faz com ou sem o 9º dígito.** `5598981908366` e
+> `559881908366` são tratados como a mesma linha — o Impetus normaliza os dois
+> lados antes de comparar. Isso é necessário porque o WhatsApp nem sempre entrega
+> o número na mesma forma em que ele foi digitado aqui.
+
+### Obter a `GROQ_API_KEY` (Fatia 2 em diante)
+
+É ela que permite ao Impetus **entender frases**, em vez de só reconhecer a
+palavra exata `status`. O Groq roda modelos de linguagem com um tier gratuito
+generoso — que é o que o Impetus usa por padrão.
+
+1. Crie conta em <https://console.groq.com/> (login com Google ou GitHub serve).
+2. Vá em <https://console.groq.com/keys> → **Create API Key**, dê um nome
+   (ex.: `impetus-brain`) e copie o valor. Começa com `gsk_` e **só aparece
+   uma vez** — se perder, gere outra.
+3. Cole no `.env` do `brain`, em `GROQ_API_KEY`.
+
+**Não precisa cadastrar cartão** para o tier gratuito.
+
+#### Limite diário
+
+O tier gratuito do Groq é **por conta, não por pessoa**, e varia por modelo:
+
+| Modelo | Por minuto | Por dia |
+|---|---|---|
+| `openai/gpt-oss-120b` (padrão) | 30 | ~1.000 |
+| `openai/gpt-oss-20b` | 30 | maior (o 20b tem cota mais folgada) |
+
+**Cada mensagem mandada ao Impetus consome uma requisição** — inclusive as que ele
+não sabe atender, porque a interpretação acontece antes de qualquer decisão. Ainda
+assim, ~1.000/dia é **20× o que o provedor anterior (OpenRouter) dava de graça**, e
+folgado para o uso de um time pequeno.
+
+Quando estoura, o Impetus responde `"Deu erro aqui do meu lado"` em toda mensagem
+até o limite virar, e o log mostra `429 Rate limit exceeded`. Os limites exatos da
+sua conta ficam em <https://console.groq.com/settings/limits>.
+
+#### ⚠️ Privacidade: leia antes de usar em conversa real
+
+O texto de **toda mensagem** que chega de um número autorizado é enviado ao Groq
+para ser interpretado. As mensagens são conversa interna do time — então, antes de
+usar com conteúdo real, **confira a política de dados do Groq** em
+<https://groq.com/privacy-policy/> e nas configurações da conta.
+
+Isso não é burocracia: o `manifesto-impetus.md` (Seção VII) trata **propriedade
+do dado pelo usuário** como princípio inviolável. Mandar conversa da equipe para
+um terceiro contradiz isso se o terceiro usar esse conteúdo. A decisão de aceitar
+ou não o risco é do time — mas precisa ser consciente, não acidental. (Vale o
+mesmo alerta que já valia para o OpenRouter: nenhum tier gratuito de LLM está
+isento dessa análise.)
+
+#### Trocar de modelo
+
+`GROQ_MODEL` é opcional; sem ela vale o padrão `openai/gpt-oss-120b`.
+
+**O modelo escolhido precisa suportar saída estruturada em MODO ESTRITO** — é isso
+que garante que a resposta venha como JSON válido em vez de texto solto. No Groq,
+**apenas `openai/gpt-oss-120b` e `openai/gpt-oss-20b`** têm modo estrito (via
+*constrained decoding*, que força o formato do schema).
+
+- **`gpt-oss-120b`** (padrão) — prioriza qualidade de classificação.
+- **`gpt-oss-20b`** — cota diária maior, modelo menor. Alternativa se a cota
+  apertar, ao custo de possível queda na qualidade.
+
+> **Sempre valide ao trocar de modelo.** Rode o benchmark:
+>
+> ```bash
+> GROQ_MODEL="openai/gpt-oss-20b" npm run bench:intent
+> ```
+>
+> Ele passa 24 frases (nenhuma copiada do prompt) e mostra acerto de intenção e
+> de alvo. **Consome 24 requisições** — folgado no limite do Groq, mas conte.
+>
+> Por que insistir nisso: no provedor anterior, o `gpt-oss-20b` **aparecia como
+> compatível e na prática ignorava o schema**. O modo estrito do Groq usa um
+> mecanismo diferente que deve corrigir isso — mas "deve" não é "foi medido".
+
+Se um modelo não respeitar o schema, o sintoma é o Impetus responder
+`"Deu erro aqui do meu lado"` em toda mensagem, com o log dizendo
+`não respeitou o schema` e mostrando o que veio.
+
+#### Outros cuidados
+
+- **Nunca versione a chave no git.** Ela vive só no `.env`, que já está no
+  `.gitignore` — do mesmo jeito que o `PAIRING_SECRET` e a pasta `auth_info/`.
+- **Sem a chave o cérebro sobe normalmente**, conecta no WhatsApp e aceita
+  agentes — mas toda mensagem recebida falha na interpretação e responde erro. Se
+  o `status` parou de funcionar depois de atualizar, é o primeiro lugar a olhar.
 
 Suba:
 
@@ -199,7 +301,9 @@ npm run smoke
 
 ---
 
-## 6. Checklist de validação da fatia
+## 6. Checklist de validação
+
+### Fatia 1 — transporte
 
 Os sete critérios de aceite, na ordem em que convém testar:
 
@@ -213,6 +317,36 @@ Os sete critérios de aceite, na ordem em que convém testar:
 7. Matar o `brain` e subir de novo → os agentes reconectam sozinhos, sem
    ninguém tocar neles (leva até ~5s por tentativa).
 
+### Fatia 2 — interpretação de linguagem natural
+
+Com a `GROQ_API_KEY` preenchida e pelo menos um agente conectado, mande as
+mensagens abaixo pelo WhatsApp. Em cada uma, confira também a linha
+`[brain] intencao interpretada: ...` no log do cérebro:
+
+| Mande | Esperado no WhatsApp | Esperado no log |
+|---|---|---|
+| `status` | a lista de máquinas | `intencao interpretada: status` |
+| `quais máquinas estão online?` | a mesma lista | `intencao interpretada: status` |
+| `onde está o projeto Flora?` | `Entendi: você quer localizar...` | `find \| alvo: "Flora"` |
+| `zipa o projeto X e manda` | `Entendi: você quer enviar...` | `shareFile \| alvo: "X"` |
+| `bom dia` | `Ainda não sei fazer isso.` | `intencao interpretada: unknown` |
+
+O segundo caso é o que prova a fatia: uma frase que **não contém a palavra
+`status`** precisa chegar no mesmo lugar. O terceiro e o quarto provam a
+ampliação: o Impetus reconhece o protocolo e o alvo mesmo sem saber executar.
+
+Se uma frase equivalente cair em `"Ainda não sei fazer isso."`, a interpretação
+está funcionando mas classificando mal — o ajuste é no prompt do `intent.ts`, não
+no transporte. Meça antes de ajustar:
+
+```bash
+npm run bench:intent
+```
+
+Ele roda 24 frases (4 por protocolo), nenhuma delas copiada dos exemplos do
+prompt — mede generalização, não memória. Reporta acerto de intenção e de
+extração de alvo. **Consome 24 requisições** (folgado no limite do Groq).
+
 ---
 
 ## 7. Problemas comuns
@@ -225,7 +359,12 @@ Os sete critérios de aceite, na ordem em que convém testar:
 | QR aparece de novo toda vez que sobe | A pasta `auth_info/` não está sendo preservada entre execuções (rodando de outra pasta, ou apagando ela). |
 | `status` responde "Nenhuma máquina conectada" com agente rodando | O agente conectou mas não registrou — olhe o log dele, provavelmente o secret. |
 | Máquina aparece como `sem resposta` | A máquina suspendeu ou a rede caiu. O cérebro derruba a conexão morta em até 30s e ela some da lista. |
-| Mandei `status` e não veio nada | Seu número não está em `WHATSAPP_ALLOWED_NUMBERS`, ou você mandou em grupo (grupos não são atendidos nesta fatia). |
+| Mandei `status` e não veio nada | Seu número não está em `WHATSAPP_ALLOWED_NUMBERS`, ou você mandou em grupo (grupos não são atendidos nesta fatia). O 9º dígito **não** é causa — as duas formas são aceitas. |
+| Toda mensagem responde `"Deu erro aqui do meu lado"` | Falha na chamada ao Groq. O log do `brain` diz qual — veja as três linhas seguintes. Note que **não** é a mesma coisa que `"Ainda não sei fazer isso."`, que significa que a interpretação funcionou e classificou como fora de escopo. |
+| Log: `429 Rate limit exceeded` | Estourou a cota diária da conta Groq. Só volta quando o limite virar. Se acontecer com frequência, troque `GROQ_MODEL` para `openai/gpt-oss-20b` (cota maior). |
+| Log: `não respeitou o schema` | O modelo em `GROQ_MODEL` não suporta modo estrito. Use `openai/gpt-oss-120b` ou `openai/gpt-oss-20b`, e valide com `npm run bench:intent`. |
+| Log: `resposta vazia ... mesmo após retry` | Instabilidade do modelo gratuito. O código já tenta 2 vezes; se persistir em toda mensagem, troque de modelo. |
+| Frases equivalentes a `status` caem em `"Ainda não sei fazer isso."` | Classificação de fato errando. Rode `npm run bench:intent` para medir, e ajuste o prompt em `apps/brain/src/intent.ts` ou troque de modelo. |
 
 ---
 

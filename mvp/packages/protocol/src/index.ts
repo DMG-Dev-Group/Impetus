@@ -14,7 +14,16 @@ export type MessageType =
   | "heartbeat" // agente -> cerebro, periodico
   | "heartbeat_ack" // cerebro -> agente
   | "cmd.request" // cerebro -> agente, pede execucao
-  | "cmd.response"; // agente -> cerebro, devolve resultado
+  | "cmd.response" // agente -> cerebro, devolve resultado
+  /**
+   * PLACEHOLDER DE FATIA FUTURA — reservado, sem nenhum fluxo implementado.
+   *
+   * Vai carregar o pedido de confirmacao antes de acoes de risco (ver o modelo
+   * de confirmacao por classe de acao no `DESCRITIVO_MVP.md`). Hoje nenhum lado
+   * envia nem trata este tipo; ele existe aqui so para que o contrato ja preveja
+   * o passo, em vez de precisar mudar a forma do protocolo depois.
+   */
+  | "cmd.confirm";
 
 export interface Envelope<T = unknown> {
   v: 1;
@@ -36,13 +45,32 @@ export interface RegisteredPayload {
   reason?: string; // presente quando ok = false
 }
 
+/**
+ * Comandos que um agente local pode receber.
+ *
+ * Apenas `status` tem implementacao. Os demais sao PLACEHOLDERS DE FATIA FUTURA:
+ * estao no contrato para reservar o nome e o formato, e **nenhum deles tem
+ * handler** — nem no cerebro, nem no agente. Um agente que receba um destes hoje
+ * responde `ok: false` com "comando desconhecido".
+ *
+ * - `find`      — localizar pasta/projeto pelo nome
+ * - `gitStatus` — branch atual, arquivos alterados, ultima modificacao
+ * - `listFiles` — listar conteudo de uma pasta/projeto
+ * - `shareFile` — enviar um arquivo de volta pelo WhatsApp
+ *
+ * Quando cada um for implementado, `CmdResponsePayload.result` provavelmente
+ * deixa de ser um tipo unico e vira uma uniao discriminada por `command`.
+ */
+export type CommandName = "status" | "find" | "gitStatus" | "listFiles" | "shareFile";
+
 export interface CmdRequestPayload {
-  command: "status"; // unico comando desta fatia
+  command: CommandName; // apenas "status" e executavel nesta fatia
 }
 
 export interface CmdResponsePayload {
-  command: "status";
+  command: CommandName;
   ok: boolean;
+  /** Formato do `status`. Os comandos futuros vao precisar do seu proprio formato. */
   result?: {
     nick: string;
     uptimeSeconds: number;

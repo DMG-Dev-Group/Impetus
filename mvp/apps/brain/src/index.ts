@@ -1,5 +1,7 @@
 import "dotenv/config";
+import type { CommandName } from "@impetus/protocol";
 import { formatarRespostaStatus } from "./format";
+import { interpretarIntencao } from "./intent";
 import { AgentRegistry } from "./wsServer";
 import { startWhatsApp } from "./whatsapp";
 
@@ -11,6 +13,30 @@ function envObrigatoria(nome: string): string {
     process.exit(1);
   }
   return valor;
+}
+
+/**
+ * Como o Impetus descreve, em portugues, o que entendeu de cada protocolo que
+ * ainda nao tem implementacao.
+ *
+ * O `Record` e tipado por `CommandName` menos `"status"`: se um comando novo
+ * entrar no protocolo, o TypeScript exige uma frase para ele aqui, em vez de
+ * deixar a pessoa receber uma resposta vazia.
+ */
+const PENDENTES: Record<Exclude<CommandName, "status">, string> = {
+  find: "localizar um projeto ou pasta",
+  gitStatus: "ver o estado do git de um projeto",
+  listFiles: "listar o conteúdo de uma pasta",
+  shareFile: "enviar um arquivo ou pasta",
+};
+
+function descreverPendente(intent: Exclude<CommandName, "status">, alvo: string | null): string {
+  const acao = PENDENTES[intent];
+  const complemento = alvo ? ` — "${alvo}"` : "";
+  return (
+    `Entendi: você quer ${acao}${complemento}.\n\n` +
+    "Isso ainda não está pronto — vem numa próxima etapa do Impetus."
+  );
 }
 
 async function main(): Promise<void> {
@@ -33,21 +59,34 @@ async function main(): Promise<void> {
   await startWhatsApp({
     allowedNumbers,
     onCommand: async (texto, responder) => {
-      const comando = texto.trim().toLowerCase();
+      // Fatia 2: qualquer frase e interpretada. Se a API falhar, a excecao sobe
+      // e o handler do WhatsApp responde com erro — de proposito, para nao
+      // confundir "falha de infraestrutura" com "nao sei fazer isso".
+      const intencao = await interpretarIntencao(texto);
+      console.log(
+        `[brain] intencao interpretada: ${intencao.intent}` +
+          (intencao.alvo ? ` | alvo: "${intencao.alvo}"` : ""),
+      );
 
-      // Fatia 1: um unico comando fixo. Interpretacao de linguagem natural e Fatia 2.
-      if (comando !== "status") {
-        console.log(`[brain] comando desconhecido ignorado: "${texto}"`);
+      if (intencao.intent === "status") {
+        if (registry.connectedNicks().length === 0) {
+          await responder("Nenhuma máquina conectada no momento.");
+          return;
+        }
+        const resultados = await registry.requestStatusFromAll();
+        await responder(formatarRespostaStatus(resultados));
         return;
       }
 
-      if (registry.connectedNicks().length === 0) {
-        await responder("Nenhuma máquina conectada no momento.");
+      if (intencao.intent === "unknown") {
+        await responder("Ainda não sei fazer isso.");
         return;
       }
 
-      const resultados = await registry.requestStatusFromAll();
-      await responder(formatarRespostaStatus(resultados));
+      // Protocolo reconhecido, mas ainda sem implementacao (fatias futuras).
+      // Dizer o que foi entendido vale mais que um "nao sei" generico: a pessoa
+      // descobre que o pedido faz sentido e que falta a acao, nao a compreensao.
+      await responder(descreverPendente(intencao.intent, intencao.alvo));
     },
   });
 

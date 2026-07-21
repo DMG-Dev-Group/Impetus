@@ -15,25 +15,61 @@ número de WhatsApp só.
 
 ---
 
-## O que dá pra fazer hoje
+## Fale naturalmente
 
-**Um comando: `status`.**
+**Você não precisa decorar comando.** Escreva como escreveria para um colega —
+com gíria, sem acento, com erro de digitação, frase curta. O Impetus lê e entende
+a intenção.
 
-Sim, só isso. Esta é a primeira fatia do projeto, e ela existe para provar que o
-caminho todo funciona — sua mensagem sai do WhatsApp, chega no cérebro central,
-ele pergunta pras máquinas, e a resposta volta pra você. Comandos úteis de
-verdade (achar projeto, ver status de git, zipar pasta) vêm nas fatias seguintes,
-e só fazem sentido depois que este caminho estiver provado.
+## O que ele faz hoje
+
+**Uma coisa, de verdade: dizer quais máquinas estão ligadas.**
+
+Mas ele **entende** cinco tipos de pedido, e responde de forma diferente conforme
+o caso:
+
+| Você pede | Ele hoje |
+|---|---|
+| Quais máquinas estão no ar | ✅ **responde de verdade** |
+| Achar um projeto ou pasta | reconhece e avisa que ainda não faz |
+| Estado do git (branch, o que mudou) | reconhece e avisa que ainda não faz |
+| Listar arquivos de uma pasta | reconhece e avisa que ainda não faz |
+| Receber um arquivo (ou zipar e mandar) | reconhece e avisa que ainda não faz |
+
+Nos quatro últimos, a resposta é assim:
+
+> Entendi: você quer localizar um projeto ou pasta — "Flora".
+>
+> Isso ainda não está pronto — vem numa próxima etapa do Impetus.
+
+Isso é diferente de `"Ainda não sei fazer isso."` — aqui ele **entendeu** seu
+pedido, só falta a ação existir. Se ele repetiu de volta o que você quis dizer, a
+interpretação funcionou.
 
 ---
 
-## `status`
+## Ver as máquinas conectadas
 
 **O que faz:** lista quais máquinas do time estão conectadas ao Impetus agora, e
 há quanto tempo cada uma está no ar.
 
-**Como mandar:** só a palavra `status`. Maiúscula, minúscula e espaço sobrando
-não importam — `status`, `STATUS` e ` Status ` funcionam igual.
+**Como pedir:** do jeito que for natural pra você. Todas estas funcionam:
+
+- `status`
+- `quais máquinas estão online?`
+- `quem tá ligado agora`
+- `o PC do Daniel tá no ar?`
+- `me dá um resumo das máquinas`
+
+Maiúscula, minúscula, acento e pontuação não importam. A palavra `status` continua
+funcionando exatamente como antes — ela não deixou de valer, só deixou de ser a
+única forma.
+
+> **Se ele não entender, ele diz.** Quando a frase não é clara, o Impetus prefere
+> responder `"Ainda não sei fazer isso."` a chutar. Isso é de propósito: é melhor
+> ele admitir que não entendeu do que executar algo que você não pediu. Se
+> acontecer com um pedido que deveria funcionar, reformule mais direto — e avise
+> quem cuida do Impetus, porque dá pra ajustar.
 
 ### O que esperar de resposta
 
@@ -71,11 +107,49 @@ está com a rede muito ruim. Manda `status` de novo daqui a pouco.
 
 ---
 
+## Uma coisa que você precisa saber
+
+**Para entender sua frase, o Impetus manda o texto dela para um serviço externo**
+(o Groq, que roda o modelo de linguagem). Isso vale para **toda** mensagem que
+você mandar — inclusive as que ele não sabe atender.
+
+Consequência prática: **não mande pelo Impetus nada que você não mandaria para
+fora da empresa** — senha, chave de API, dado de cliente, informação sigilosa. Ele
+não é um canal interno fechado.
+
+O que ele *não* manda para fora: nome das máquinas, uptime, e qualquer coisa que
+os agentes locais leiam. Só o texto da sua mensagem sai.
+
+---
+
 ## Coisas que vão acontecer (e são normais)
 
-**Mandei outra coisa e o Impetus não respondeu nada.**
-Correto. Hoje ele só entende `status`. Qualquer outra mensagem é ignorada, sem
-resposta. Ele ainda não sabe conversar — isso é a Fatia 2.
+**Ele respondeu `"Ainda não sei fazer isso."`**
+Significa que o pedido não se encaixou em nenhum dos cinco tipos que ele conhece —
+por exemplo `"cria um repositório"`, `"apaga a pasta X"` ou conversa fiada. Se
+você acha que deveria ter se encaixado, tente ser mais direto e avise quem cuida
+do Impetus: dá para medir e ajustar.
+
+**Ele respondeu `"Entendi: você quer... Isso ainda não está pronto"`**
+Correto e esperado. Ele entendeu certo; a ação é que ainda não foi construída.
+Até a Fatia 1 ele ignorava em silêncio; agora você sabe que a mensagem chegou e
+foi compreendida.
+
+**Ele respondeu `"Deu erro aqui do meu lado ao processar isso."`**
+Isso é diferente de `"Ainda não sei fazer isso."` — significa que o Impetus não
+conseguiu nem interpretar sua mensagem. Não é você. As causas comuns:
+
+- **Acabou a cota do dia.** O serviço que interpreta as frases é gratuito e tem
+  teto diário somando o time todo (hoje na casa de ~1.000 mensagens/dia). Difícil
+  de bater no uso normal, mas possível.
+- Problema de configuração ou de rede do lado dele.
+
+Nos dois casos, avise quem cuida do Impetus — o log dele diz qual foi.
+
+**Ele entendeu errado o que eu pedi.**
+Acontece, especialmente com frases muito curtas ou ambíguas. Tente ser mais
+direto (`"quais máquinas estão online?"`). Se um pedido que deveria funcionar
+falha de forma consistente, avise — dá para medir e ajustar.
 
 **Mandei do meu número e não veio nada.**
 Só números autorizados podem mandar comando. Se o seu não estiver na lista, o
@@ -95,14 +169,28 @@ respostas antes de te responder.
 
 ## O que o Impetus **não** faz hoje
 
-Para não gerar expectativa errada — nada disto existe ainda:
+Para não gerar expectativa errada:
 
-- Entender frase solta ("me vê como tá o PC do Daniel") — só a palavra `status`.
-- Achar, ler, mandar ou zipar arquivo.
-- Falar qualquer coisa sobre git (branch, commit, alterações).
-- Lembrar do que você falou na mensagem anterior.
+- **Achar, listar, mandar ou zipar arquivo, e ver git** — ele *entende* esses
+  pedidos, mas ainda não *executa* nenhum deles.
+- **Lembrar do que você falou na mensagem anterior.** Cada mensagem é lida
+  isolada, então `"e o outro?"` ou `"aquele projeto"` não funcionam — repita o
+  que quer dizer por extenso.
 - Funcionar em grupo — só conversa direta com o número do Impetus.
+- Qualquer coisa fora desses cinco tipos: criar repositório, apagar arquivo,
+  instalar programa, mandar email.
 
 ---
 
-*Manual da Fatia 1. Cresce a cada fatia nova.*
+## Histórico
+
+| Fatia | O que mudou pra quem usa |
+|---|---|
+| 1 | Só a palavra exata `status`. Qualquer outra mensagem era ignorada em silêncio. |
+| 2 | Passou a entender pedido em linguagem natural, e a responder `"Ainda não sei fazer isso."` em vez de ficar mudo. A partir daqui, o texto das suas mensagens passa por um serviço externo — ver a seção acima. |
+| 2 (ampliação) | Passou a entender cinco tipos de pedido (máquinas, achar, git, listar, receber arquivo) e a repetir de volta o que entendeu quando a ação ainda não existe. |
+
+---
+
+*Manual atualizado na Fatia 2. Cresce a cada fatia nova — entradas antigas ficam
+no histórico acima, não são apagadas.*

@@ -11,7 +11,8 @@
     "build": "npm run build --workspaces --if-present",
     "dev:brain": "npm run dev --workspace @impetus/brain",
     "dev:agent": "npm run dev --workspace @impetus/agent",
-    "smoke": "tsx scripts/smoke-transport.ts"
+    "smoke": "tsx scripts/smoke-transport.ts",
+    "bench:intent": "tsx scripts/bench-intent.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
