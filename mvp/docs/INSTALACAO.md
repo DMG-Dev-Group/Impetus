@@ -301,6 +301,113 @@ npm run smoke
 
 ---
 
+## 5-B. Testar entre máquinas de verdade (LAN e NAT)
+
+Este é o teste que a Fatia 1 deixou em aberto de propósito: provar que um agente
+**em outro computador** chega ao cérebro. Faça em duas etapas — primeiro na mesma
+rede (mais simples), depois em redes diferentes (o teste que importa).
+
+O ponto de arquitetura por trás disso: **o agente sempre disca para fora**, então
+o PC do agente não precisa de nenhuma configuração de rede. Quem precisa ter um
+endereço alcançável é o **cérebro**. Os dois testes abaixo diferem só em *como* o
+cérebro fica alcançável.
+
+### Etapa 1 — mesma rede (LAN)
+
+O PC do agente alcança o do cérebro pelo IP local. Sem tunnel, sem roteador.
+
+**No PC do cérebro:**
+
+1. Descubra o IP local dele. No PowerShell:
+   ```powershell
+   Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select IPAddress, InterfaceAlias
+   ```
+   (No momento em que este guia foi escrito, esta máquina estava em
+   `192.168.248.137` na Wi-Fi. O seu vai ser diferente — e **muda** se trocar de
+   rede.)
+
+2. **Libere a porta 8080 no firewall do Windows.** Por padrão ela é bloqueada para
+   conexões de fora — este é o motivo nº 1 de "o agente não conecta" na LAN. Num
+   PowerShell **como administrador**:
+   ```powershell
+   New-NetFirewallRule -DisplayName "Impetus brain 8080" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8080
+   ```
+   Para desfazer depois do teste:
+   `Remove-NetFirewallRule -DisplayName "Impetus brain 8080"`.
+
+3. Suba o cérebro normalmente (`npm run dev` no `brain`), e confirme
+   `[whatsapp] conectado ao WhatsApp`.
+
+**No PC do agente:**
+
+4. Instale o projeto lá (Node 20+, `git clone` ou cópia da pasta, `npm install` na
+   raiz de `mvp/`).
+
+5. **Antes de mexer no agente, teste se o PC alcança o cérebro** — isola firewall
+   de problema de app:
+   ```powershell
+   Test-NetConnection 192.168.248.137 -Port 8080
+   ```
+   `TcpTestSucceeded : True` = caminho aberto. `False` = firewall ou IP errado;
+   resolva isto antes de seguir.
+
+6. No `.env` do agente (`apps/agent/.env`):
+   ```bash
+   WS_BRAIN_URL=ws://192.168.248.137:8080   # o IP LOCAL do cérebro
+   AGENT_NICK=PC-DoFulano                    # único
+   PAIRING_SECRET=<o MESMO do cérebro>
+   ```
+
+7. `npm run dev` no agente. O cérebro deve logar
+   `[ws] agente registrado: PC-DoFulano`, e `status` no WhatsApp deve listá-lo.
+
+### Etapa 2 — redes diferentes (o teste de NAT de verdade)
+
+Agora o PC do agente está numa rede que **não enxerga** a do cérebro (ex.: agente
+no 4G/celular, ou em outro local). O IP `192.168.x.x` do cérebro não vale mais
+nada de fora. O cérebro precisa de um **endereço público**.
+
+**O lado do agente não muda** — ele continua só discando para fora. É exatamente
+isso que o teste prova: agente atrás de NAT alcança o cérebro sem configuração
+nenhuma no roteador dele. O que muda é como o cérebro se expõe. Três caminhos:
+
+| Caminho | Esforço | Quando usar |
+|---|---|---|
+| **Tunnel** (cloudflared / ngrok) | baixo | **Recomendado para o teste.** Sem mexer em roteador |
+| Redirecionamento de porta no roteador | médio | Se você tem acesso ao roteador e IP público fixo |
+| VPS (Oracle Cloud Always Free) | alto | O caminho **de produção**, previsto no `DESCRITIVO_MVP.md` |
+
+**Caminho recomendado — tunnel com cloudflared** (não exige conta):
+
+1. No PC do cérebro, com o `brain` já rodando na 8080, abra outro terminal:
+   ```bash
+   cloudflared tunnel --url http://localhost:8080
+   ```
+   Ele imprime uma URL tipo `https://algo-aleatorio.trycloudflare.com`.
+
+2. No `.env` do agente (na outra rede), use essa URL com **`wss://`** e **sem
+   porta** (o tunnel termina o TLS e mapeia para a 8080 local):
+   ```bash
+   WS_BRAIN_URL=wss://algo-aleatorio.trycloudflare.com
+   ```
+   Bônus: como o tunnel dá `wss://` (TLS), o `PAIRING_SECRET` trafega criptografado
+   neste teste — o que resolve, só para o teste, a dívida de "sem TLS" registrada
+   na Fatia 1. O código não muda: o cliente `ws` fala `wss://` nativamente.
+
+3. Suba o agente. Se ele registrar e o `status` listá-lo, **a travessia de NAT
+   está provada** — a segunda das duas incertezas que o projeto existia para
+   eliminar.
+
+> **Nota sobre o WhatsApp:** o tunnel expõe **só** a porta 8080 (o servidor dos
+> agentes). A conexão do cérebro com o WhatsApp é de saída e não precisa de
+> exposição nenhuma — continua funcionando igual.
+
+Quando este teste passar com dois PCs reais em redes diferentes, o critério de
+aceite de NAT que ficou aberto desde a Fatia 1 estará fechado. Registre o
+resultado no `EXECUCOES.md`.
+
+---
+
 ## 6. Checklist de validação
 
 ### Fatia 1 — transporte
