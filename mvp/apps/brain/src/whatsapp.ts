@@ -16,9 +16,27 @@ import qrcode from "qrcode-terminal";
 
 /**
  * Chamado quando chega uma mensagem de texto de um numero autorizado.
- * `responder` manda o texto de volta para a mesma conversa.
+ *
+ * `numero` e a forma CANONICA (ver `canonicalizarNumero`) — usada como chave de
+ * identidade estavel para estado de curto prazo (ex.: pergunta pendente do
+ * `find`), ja que o mesmo numero pode chegar do WhatsApp com ou sem o 9 extra
+ * entre uma mensagem e outra.
+ *
+ * `responder` manda o texto de volta para a mesma conversa. `enviarArquivo`
+ * manda um DOCUMENTO (usado por `shareFile`) — capacidade separada de
+ * `responder` porque e um tipo de conteudo diferente (binario, nao texto).
  */
-export type CommandHandler = (texto: string, responder: (resposta: string) => Promise<void>) => Promise<void>;
+export type EnviarArquivo = (
+  arquivo: { fileName: string; contentBase64: string; mimeType: string },
+  caption?: string,
+) => Promise<void>;
+
+export type CommandHandler = (
+  texto: string,
+  numero: string,
+  responder: (resposta: string) => Promise<void>,
+  enviarArquivo: EnviarArquivo,
+) => Promise<void>;
 
 export interface WhatsAppOptions {
   /** Numeros autorizados, so digitos, formato internacional sem "+". */
@@ -153,7 +171,8 @@ export async function startWhatsApp(options: WhatsAppOptions): Promise<WASocket>
       const numero = extrairNumeroRemetente(msg.key);
       if (!numero) continue;
 
-      if (!autorizados.has(canonicalizarNumero(numero))) {
+      const numeroCanonico = canonicalizarNumero(numero);
+      if (!autorizados.has(numeroCanonico)) {
         // Silencio deliberado: nem responde, nem loga o conteudo.
         continue;
       }
@@ -167,8 +186,17 @@ export async function startWhatsApp(options: WhatsAppOptions): Promise<WASocket>
         await socket.sendMessage(remoteJid, { text: resposta });
       };
 
+      const enviarArquivo: EnviarArquivo = async (arquivo, caption) => {
+        await socket.sendMessage(remoteJid, {
+          document: Buffer.from(arquivo.contentBase64, "base64"),
+          mimetype: arquivo.mimeType,
+          fileName: arquivo.fileName,
+          caption,
+        });
+      };
+
       try {
-        await options.onCommand(texto, responder);
+        await options.onCommand(texto, numeroCanonico, responder, enviarArquivo);
       } catch (err) {
         const motivo = err instanceof Error ? err.message : String(err);
         console.error(`[whatsapp] falha ao tratar comando: ${motivo}`);

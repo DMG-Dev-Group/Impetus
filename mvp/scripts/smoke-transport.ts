@@ -35,6 +35,9 @@ async function main() {
       brainUrl: `ws://localhost:${PORT}`,
       nick,
       secret: SECRET,
+      // Este smoke testa so o transporte; o indice de arquivos e testado a
+      // parte (scripts/bench-find.ts, quando existir).
+      indexRoots: [],
       onRegistrationRejected: (r) => console.log(`  [${nick}] recusado: ${r}`),
     });
 
@@ -56,6 +59,7 @@ async function main() {
     brainUrl: `ws://localhost:${PORT}`,
     nick: "PC-Invasor",
     secret: "secret-errado",
+    indexRoots: [],
     onRegistrationRejected: (r) => { recusado = r; },
   });
   mau.connect();

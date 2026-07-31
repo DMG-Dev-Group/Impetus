@@ -6,11 +6,9 @@ Como as peças do MVP funcionam por dentro. Documento técnico, escrito para que
 vai mexer no código. Quem só quer usar o Impetus pelo WhatsApp deve ler o
 `MANUAL.md`; quem vai instalar, o `INSTALACAO.md`.
 
-Estado atual: **Fatia 2 — Interpretação de linguagem natural**. O transporte da
-Fatia 1 está de pé, e a comparação de string fixa foi trocada por interpretação
-via API da Anthropic. Continua existindo uma única ação (`status`) — não há
-acesso a arquivos, git, nem modelo de confirmação. Isso é deliberado — ver a
-seção final.
+Estado atual: **`status`, `find`, `listFiles` e `shareFile` funcionam de
+verdade.** Só falta `gitStatus` e o modelo de confirmação por classe de ação
+— ver a seção final.
 
 ---
 
@@ -190,10 +188,10 @@ agora"` chegarem no mesmo lugar que `"status"`.
 | Intenção | Finalidade | Implementado? |
 |---|---|---|
 | `status` | Quais máquinas estão no ar, e há quanto tempo | ✅ sim |
-| `find` | Localizar uma pasta ou projeto | ❌ reservado |
+| `find` | Localizar uma pasta ou projeto | ✅ sim |
+| `listFiles` | Ver o conteúdo de uma pasta | ✅ sim |
+| `shareFile` | Receber um arquivo ou pasta (inclui "zipar e mandar") | ✅ sim |
 | `gitStatus` | Estado do repositório: branch, alterações, último commit | ❌ reservado |
-| `listFiles` | Ver o conteúdo de uma pasta | ❌ reservado |
-| `shareFile` | Receber um arquivo ou pasta (inclui "zipar e mandar") | ❌ reservado |
 | `unknown` | Nenhum protocolo corresponde | — |
 
 **O tipo vem do `protocol`.** `Intencao.intent` é `CommandName | "unknown"`, onde
@@ -353,6 +351,202 @@ quando a frase é ambígua. É melhor dizer que não sabe do que executar um com
 que a pessoa não pediu — o mesmo princípio de cautela que vai reger o modelo de
 confirmação nas fatias seguintes.
 
+### 4.4. O índice local de arquivos (agente)
+
+Cada agente mantém, em memória, um índice leve das pastas que ele reconhece —
+`apps/agent/src/fileIndex.ts`. Configurado por `AGENT_INDEX_ROOTS` (opcional):
+uma ou mais pastas raiz, separadas por vírgula.
+
+**Escaneia só o primeiro nível.** Cada subpasta imediata de cada raiz é tratada
+como "um projeto" — o índice não entra recursivamente dentro delas. Isso evita
+escanear `node_modules` e afins, e é o suficiente para responder "onde está o
+projeto X": o que tem *dentro* do projeto é problema do `listFiles`, de uma
+fatia futura, não do `find`.
+
+**Não é só pasta — arquivo solto no mesmo nível também entra.** Se houver um
+arquivo dentro da raiz configurada (ex.: um `.rar` de backup ao lado das pastas
+de projeto), ele também vira candidato. `FindMatch` tem um campo `kind:
+"folder" | "file"` para o cérebro saber a diferença na hora de formatar a
+resposta — `isGitRepo` só faz sentido para pasta, e é sempre `false` para
+arquivo.
+
+Para cada entrada encontrada, guarda: `name`, `path`, `kind`, `isGitRepo`
+(existe uma subpasta `.git`? só se checa para pasta) e `lastModified` (mtime,
+ISO 8601). Atualizado por `setInterval` a cada 5 minutos — não por um
+observador de sistema de arquivos. O `DESCRITIVO_MVP.md` permite qualquer um
+dos dois; um watcher traria dependência e complexidade cross-platform
+(comportamento diferente em Windows/Linux/macOS) sem necessidade clara nesta
+etapa.
+
+**Busca por normalização, não por biblioteca de fuzzy matching.** A query e cada
+nome são normalizados (minúsculo, sem acento, **sem separador**) e comparados
+por pontuação: match exato (100) > começa com (75) > nome contém a query (50).
+É um índice leve, não um motor de busca — o objetivo é achar "onde", não
+ranquear com precisão de produção. A remoção de acento compara **código Unicode
+numérico** diretamente (faixa `U+0300`–`U+036F`, as marcas diacríticas que a
+forma NFD separa da letra base), em vez de regex com o caractere escrito no
+arquivo-fonte — evita depender de como o editor/encoding trata um combining
+character solto no código.
+
+**Espaço, `_`, `-` e `.` contam como o mesmo separador** (removidos antes de
+comparar) — `"DMG_SaaS"`, `"dmg saas"` e `"dmg-saas"` normalizam para a mesma
+chave. Achado testando contra a pasta real de um usuário (não os diretórios
+sintéticos do `smoke-find.ts`): a forma como uma pasta é nomeada no disco
+(convenção de programador, com underscore) e a forma como uma pessoa diz o nome
+em voz alta (com espaço) são coisas diferentes, e a normalização inicial só
+cobria acento/maiúscula.
+
+**Não existe mais um ramo de pontuação para "a query contém o nome" (o
+inverso de "nome contém a query").** Ele existia e foi removido depois de
+causar um falso positivo real: como `.` também é separador removido, buscar
+`"DMG_SaaS.rar"` normaliza para algo que "engole" o nome da pasta `DMG_SaaS`
+mais o sufixo da extensão — e aquele ramo aceitava isso como match fraco,
+trazendo a **pasta** quando a pessoa queria o **arquivo**. Removido, e resolvido
+junto com a indexação de arquivos: agora `"DMG_SaaS.rar"` bate **exato** no
+arquivo (100), e a pasta não entra em nenhum ramo (0) — sem coincidência. Ver
+`EXECUCOES.md` para o relato completo das duas correções.
+
+Se `AGENT_INDEX_ROOTS` não estiver configurada, o agente sobe normalmente e
+`status` funciona igual — só que `find` nunca encontra nada nesse agente.
+
+### 4.5. Ciclo de vida de uma mensagem `find`
+
+Diferente do `status` (uma pergunta, uma resposta agregada), o `find` pode
+gerar uma **pergunta de volta** antes de responder de verdade — e é aqui que
+entra a primeira fatia de contexto de conversa do Impetus.
+
+1. A interpretação (4.2) devolve `{intent: "find", alvo: "..." | null}`.
+2. **Se `alvo` for `null`** (a pessoa pediu para achar algo sem dizer o quê): o
+   Impetus responde `"Qual projeto ou pasta você quer localizar?"` e guarda uma
+   pergunta pendente do tipo `find_target` para aquele número de telefone.
+3. **Se houver `alvo`** (ou a próxima mensagem completar o passo 2): o cérebro
+   manda `cmd.request` (`command: "find", query: alvo`) para **todos** os
+   agentes conectados em paralelo — mesmo padrão de timeout por agente do
+   `status`. Agentes com erro ou timeout **não aparecem na resposta** —
+   diferente do `status`, onde a própria máquina é a informação pedida, aqui a
+   pessoa quer saber onde o projeto está, não um relatório de saúde dos agentes.
+4. Os matches de todos os agentes são agregados (mesmo projeto pode existir em
+   mais de uma máquina) e a resposta depende da contagem:
+   - **Zero:** `"Não encontrei nenhum projeto parecido com "X" em nenhuma
+     máquina conectada."`
+   - **Um:** nome, máquina, caminho, se é repositório git, última modificação.
+   - **Mais de um:** lista numerada, e o Impetus guarda uma pergunta pendente
+     do tipo `find_disambiguation` com os candidatos.
+5. **A pergunta pendente é a fatia mínima de contexto.** Ela é um `Map` em
+   memória (`apps/brain/src/pendingQuestions.ts`), chave = número de telefone
+   canônico, **um slot por vez** — não é o sistema geral de "lembrar o que foi
+   dito antes"; é só "há uma pergunta em aberto, a próxima mensagem
+   provavelmente responde a ela". Antes de classificar qualquer mensagem nova,
+   o cérebro confere se há uma pendência para aquele número:
+   - `find_target`: a mensagem crua, sem passar pelo classificador, vira a
+     query da busca (volta ao passo 3).
+   - `find_disambiguation`: a mensagem é resolvida contra os candidatos por
+     **número** (`1`, `2`...) ou por **substring do nome/nick**,
+     deterministicamente (`resolverEscolha`) — não vale chamar o classificador
+     de novo só para decidir qual opção a pessoa escolheu.
+   - Se a resposta não bater com nenhum candidato, a pendência **não é
+     forçada**: é descartada, e a mensagem é classificada do zero como pedido
+     novo.
+6. Pendência expira sozinha depois de 5 minutos (sem persistência — reinício do
+   cérebro também limpa tudo, mesmo princípio do `AgentRegistry`).
+
+### 4.5.1. `PendingQuestions` generalizada para `listFiles`/`shareFile`
+
+Quando só existia `find`, a pergunta pendente era tipada especificamente:
+`kind: "find_target" | "find_disambiguation"`. Ao chegar a segunda e terceira
+ação que precisam do **mesmo** fluxo de resolver um alvo por busca — `listFiles`
+e `shareFile` —, isso foi generalizado (`apps/brain/src/pendingQuestions.ts`):
+
+```ts
+type AcaoAlvo = "find" | "listFiles" | "shareFile";
+
+type PendingQuestion =
+  | { kind: "target"; acao: AcaoAlvo; askedAt: number }
+  | { kind: "disambiguation"; acao: AcaoAlvo; candidatos: ...; askedAt: number };
+```
+
+`resolverEscolha` não mudou nada — já era agnóstico à ação (só resolve "qual
+candidato" a partir de número ou nome). O que generalizou foi só o formato do
+estado, não a lógica de resolução.
+
+### 4.6. Ciclo de vida de `listFiles` e `shareFile`
+
+Os dois reaproveitam **inteiramente** a resolução de alvo do `find` — mesma
+busca no índice, mesma disambiguação, mesma pergunta pendente (4.5.1). A
+diferença começa **depois** que um candidato único (nick + caminho) foi
+resolvido: `index.ts` chama `executarAcao(acao, candidato, ...)`, que:
+
+- Para `find`: só formata o que já foi encontrado (nada de rede nova).
+- Para `listFiles`/`shareFile`: precisa voltar a **UM agente específico**
+  (o do candidato resolvido) pedindo o conteúdo de verdade — diferente de
+  `status`/`find`, que perguntam a **todos** os agentes conectados.
+
+Por isso `AgentRegistry` ganhou `requestListFiles(nick, path)` e
+`requestShareFile(nick, path)` (`apps/brain/src/wsServer.ts`) — direcionados a
+um nick, reaproveitando o mesmo `enviarComandoEAguardar` genérico que já
+existia para o broadcast.
+
+**`listFiles` recusa educadamente um alvo que é arquivo, não pasta:** listar
+"conteúdo" de um arquivo não faz sentido, então `executarAcao` intercepta esse
+caso (`candidato.match.kind === "file"`) antes de sequer perguntar ao agente, e
+responde `"X" é um arquivo, não uma pasta — não tem conteúdo pra listar.`.
+
+**`shareFile` funciona pros dois** (arquivo e pasta) sem nenhum ramo especial
+no cérebro — é o **agente** quem decide zipar ou não, com base no que existe
+de verdade no disco dele (ver 4.7). O cérebro só repassa o caminho resolvido.
+
+No agente (`apps/agent/src/wsClient.ts`), os dois handlers são assíncronos
+(`responderListFiles`/`responderShareFile`) — diferente de `status`/`find`,
+que respondem de forma síncrona. `listFiles` (`apps/agent/src/listFiles.ts`)
+é uma listagem **rasa**: um nível só, mesmo critério do índice de `find`
+(oculto não aparece), sem entrar em subpastas.
+
+### 4.7. Zipar e enviar (`shareFile`, agente)
+
+`apps/agent/src/shareFile.ts` decide entre dois caminhos com base no que
+`statSync` diz sobre o caminho recebido:
+
+- **Arquivo:** lê e devolve em base64 direto, com mimetype adivinhado por uma
+  tabela fixa de extensão → mimetype (sem dependência nova para isso — é um
+  `Record<string,string>` de ~20 entradas comuns).
+- **Pasta:** zipa antes de enviar — a regra central pedida: *"se pedir uma
+  pasta em vez de um arquivo, zipa e manda o zip"*. Usa `archiver` para gerar
+  o zip e `ignore` para decidir o que entra, lendo o **próprio `.gitignore`
+  da pasta** (mais `node_modules`/`.git` sempre, mesmo sem `.gitignore`) —
+  reaproveitando a decisão já registrada no `00_DECISOES.md` de excluir
+  artefatos via `.gitignore`, em vez de uma lista fixa que divergiria do que
+  cada projeto realmente ignora.
+
+**Teto de tamanho, checado ANTES de zipar.** `AGENT_MAX_FILE_MB` (padrão 20MB)
+existe para ficar bem abaixo do limite de 100MB por mensagem do `ws`, mesmo
+depois da inflação de ~33% do base64. Para pasta, em vez de zipar e abortar o
+stream no meio se passar do teto (arriscado — não há garantia de que
+`archive.abort()` deixa a `Promise` de `finalize()` resolver), o código
+**soma antecipadamente** o tamanho do que entraria no zip (já descontando o
+`.gitignore`), e lança antes de sequer instanciar o `archiver` se a soma
+passar do limite. Troca deliberada: um zip bem comprimido que passaria pelo
+teto depois de compactado é recusado sem tentar — simplicidade e
+previsibilidade em vez de uma lógica de abort mais sofisticada e arriscada.
+
+**Caminhos relativos usam `/` sempre, nunca `\`.** A sintaxe do `.gitignore` é
+sempre `/`, mesmo em pastas do Windows — tanto a soma prévia de tamanho quanto
+o filtro do `archiver` normalizam o separador antes de checar `ig.ignores()`.
+
+> **Pegadinha real de versão do `archiver`, vale registrar.** A versão 8.0.0
+> do pacote é **ESM puro** (`"type": "module"`, sem `require()` possível) —
+> importá-la de um projeto `"module": "commonjs"` (como este) quebra em
+> **runtime** com `ERR_REQUIRE_ESM`, não em tempo de compilação, e os próprios
+> tipos de `@types/archiver@8` já não declaram mais a função-fábrica
+> `archiver(formato, opções)` clássica (só `new ZipArchive(...)`). O projeto
+> usa **`archiver@7.0.1`** (a última major ainda CommonJS, com a função-fábrica
+> e os tipos correspondentes em `@types/archiver@7`) de propósito — não é
+> desatualização por descuido.
+
+**`AgentClientOptions.indexRoots` não influencia `listFiles`/`shareFile`.**
+O índice (`fileIndex.ts`) só serve para **encontrar** o caminho via `find`; uma
+vez resolvido, `listFiles`/`shareFile` operam sobre o `path` absoluto recebido
+do cérebro, sem consultar o índice de novo.
+
 ---
 
 ## 5. O envelope
@@ -374,14 +568,24 @@ Toda mensagem, nos dois sentidos, tem o mesmo formato:
 Os seis tipos com implementação: `register`, `registered`, `heartbeat`,
 `heartbeat_ack`, `cmd.request`, `cmd.response`.
 
-A Fatia 2 acrescentou **placeholders de contrato — nomes reservados, sem nenhuma
-lógica dos dois lados**:
+**`CmdRequestPayload`/`CmdResponsePayload` são uniões discriminadas por
+`command`.** `status`, `find`, `listFiles` e `shareFile` têm payload próprio
+(`StatusRequestPayload`/`FindRequestPayload`/`ListFilesRequestPayload`/
+`ShareFileRequestPayload`, e as respostas correspondentes — `FindMatch[]` para
+`find`, `FileEntry[]` para `listFiles`, `{fileName, contentBase64, mimeType}`
+para `shareFile`). Isso não existia assim na Fatia 2 — o formato único de
+então ("provavelmente vira uma união discriminada", dizia o comentário da
+época) foi generalizado quando `find` chegou, e os dois comandos seguintes só
+acrescentaram mais membros à mesma união.
+
+Ainda resta **um placeholder de contrato — nome reservado, sem nenhuma lógica
+dos dois lados**:
 
 - **`cmd.confirm`** (tipo de mensagem) — vai carregar o pedido de confirmação
   antes de ações de risco. Nenhum lado envia nem trata.
-- **`find`, `gitStatus`, `listFiles`, `shareFile`** (valores de `command`) —
-  comandos futuros. Um agente que receba um deles hoje responde `ok: false` com
-  "comando desconhecido", porque só `status` tem handler.
+- **`gitStatus`** (valor de `command`) — o único comando ainda sem payload
+  definido. Um agente que receba isso hoje responde `ok: false` com "comando
+  desconhecido", porque só `status`/`find`/`listFiles`/`shareFile` têm handler.
 
 Eles existem para que o formato do protocolo já preveja esses passos, em vez de
 precisar mudar depois. **A presença de um nome aqui não significa que ele
@@ -401,6 +605,18 @@ O registro de agentes conectados é um `Map<nick, WebSocket>` em memória. Se o
 cérebro reiniciar, o `Map` se perde — e isso é aceitável, porque os agentes
 reconectam sozinhos e se re-registram em segundos.
 
+O mesmo vale para o **índice de arquivos** de cada agente (`Map` reconstruído a
+cada refresh, nunca gravado em disco) e para a **pergunta pendente**
+(`Map<numero, pergunta>` no cérebro, um slot por número, TTL de 5 minutos —
+hoje compartilhada por `find`, `listFiles` e `shareFile`, ver 4.5.1). Se
+qualquer um dos dois processos reiniciar no meio de uma pergunta pendente, ela
+simplesmente some — a pessoa manda a mensagem de novo, sem dado inconsistente
+para limpar.
+
+`shareFile` também não persiste nada: o zip é montado inteiro em memória
+(`Buffer.concat` dos chunks do `archiver`) e descartado depois de virar
+base64 na resposta — não fica arquivo temporário nenhum no disco do agente.
+
 A única coisa que é gravada em disco é a **credencial de sessão do WhatsApp**
 (pasta `auth_info/`, via `useMultiFileAuthState` do Baileys), para não precisar
 escanear o QR toda vez que o processo reinicia.
@@ -416,16 +632,29 @@ antes.
 
 Nada disto é esquecimento; é sequenciamento:
 
-- **Qualquer acesso ao sistema de arquivos** (índice, busca, git, zip) — os nomes
-  `find`/`gitStatus`/`listFiles`/`shareFile` estão reservados no protocolo, mas
-  sem nenhuma implementação.
+- **`gitStatus`** — reservado no protocolo (nome do comando), sem payload nem
+  implementação. Os outros quatro (`status`, `find`, `listFiles`, `shareFile`)
+  já funcionam.
 - **Modelo de confirmação por classe de ação** — o tipo `cmd.confirm` está
-  reservado, mas não existe fluxo nenhum, e não há ação de risco ainda.
-- **Contexto de conversa** — cada mensagem é interpretada isoladamente. O Impetus
-  ainda não resolve "e o outro?" ou "aquele projeto".
-- **Extração de parâmetros da frase** — a interpretação devolve só a intenção, não
-  argumentos. Quando `find` for implementado, o schema vai precisar carregar
-  também o alvo da busca.
+  reservado, mas não existe fluxo nenhum. Continua não sendo urgente: `status`,
+  `find` e `listFiles` são leitura pura, e `shareFile` (mesmo zipando) não
+  altera nada na origem — a regra do `00_DECISOES.md` ("leitura simples → sem
+  confirmação"; "cópia/compartilhamento → sem confirmação, não altera a
+  origem") já cobre os quatro. Fica urgente quando a primeira ação que
+  *altera* algo (mover, sobrescrever, deletar) entrar em cena.
+- **Contexto de conversa geral** — o `find` introduziu uma fatia **mínima**
+  (pergunta pendente, um slot por número — ver 4.5/4.5.1), hoje compartilhada
+  por `find`/`listFiles`/`shareFile`, mas isso não é o sistema geral de
+  referência: `"e o outro?"` ou `"aquele projeto"`, ditos sem uma pergunta
+  pendente explícita em aberto, ainda não são resolvidos.
+- **Múltiplos comandos por mensagem** — pedir duas coisas numa frase só
+  ("acha o projeto X e me diz o git dele") ainda vira uma intenção só. Combinar
+  só faz sentido testar quando houver comportamento composto real para
+  validar.
+- **Listagem/zip recursivos** — `listFiles` e o índice de `find` são
+  deliberadamente rasos (um nível). `shareFile` zipa uma pasta inteira
+  recursivamente (isso já é necessário — um zip de projeto sem subpastas não
+  serviria pra nada), mas **listar** o conteúdo continua raso por escolha.
 - **Rodar como serviço do SO** (`node-windows`/`launchd`/`systemd`) → Fatia 6.
   Hoje roda em terminal aberto mesmo.
 - **Pareamento formal por máquina** — hoje é um único `PAIRING_SECRET`
@@ -449,9 +678,13 @@ correspondente, e a linha aqui registra quando mudou.
 | **2 (correção pós-uso real)** | Modelo trocado para `gemma-4-26b` (o anterior ignorava o schema); prompt reescrito com regra explícita e sinônimos; guarda de enum passou a falhar alto em vez de devolver `unknown`; retry em resposta vazia; benchmark `bench:intent` | 4.2, 4.3 |
 | **2 (5 protocolos)** | Interpretação estendida a `find`/`gitStatus`/`listFiles`/`shareFile`, com campo `alvo`; resposta própria por protocolo reconhecido mas não implementado. Medido 22/24 no gemma | 4, 4.2.1, 4.3 |
 | **2 (troca para Groq)** | OpenRouter → Groq, por limite diário (50→~1.000). Modelo padrão `gpt-oss-120b`, modo estrito. Retry estendido ao 400 transitório do Groq. Medido: **24/24 intenção, 17/17 alvo** | 4.2, 4.3 |
+| **Find real** | Contrato virou união discriminada (`FindRequestPayload`/`FindResponsePayload`/`FindMatch`); índice local por agente (`fileIndex.ts`); `wsServer` generalizado para comando arbitrário; pergunta pendente (`pendingQuestions.ts`) — a primeira fatia de contexto de conversa, escopada ao mínimo que o `find` precisa. Medido: `npm run smoke:find`, 22 checks, todos passam | 4.4, 4.5, 5, 6, 7 |
+| **Find (primeiro uso real)** | Dois bugs achados testando contra a pasta real do usuário (não os diretórios sintéticos do smoke test): `.env` com o placeholder do `.env.example` nunca editado, e normalização sem tratar espaço/underscore/hífen/ponto como equivalentes. Ambos corrigidos | 4.4 |
+| **Find (segundo uso real)** | Arquivos soltos na raiz não eram indexados (só pastas); a normalização por separador da correção anterior abriu um falso positivo (`.rar` batendo na pasta de nome parecido). `FindMatch` ganhou `kind: "folder"\|"file"`; arquivos passaram a ser indexados; ramo de pontuação frágil removido | 4.4 |
+| **listFiles + shareFile** | Protocolo ganhou `ListFilesRequestPayload`/`ShareFileRequestPayload` e respostas correspondentes; `listFiles` (listagem rasa) e `shareFile` (arquivo único, ou zip de pasta respeitando `.gitignore` + `node_modules`/`.git`, com teto de tamanho via `AGENT_MAX_FILE_MB`) implementados no agente; `AgentRegistry` ganhou comando direcionado a um nick específico; `PendingQuestions` generalizada (`kind`/`acao`) para as 3 ações que resolvem alvo por busca; `whatsapp.ts` ganhou `enviarArquivo` (documento, não só texto). `archiver` fixado em `7.0.1` (a v8 é ESM puro, incompatível com o `commonjs` do projeto). Medido: `npm run smoke:files`, zip aberto de verdade para confirmar exclusão | 4, 4.5.1, 4.6, 4.7, 5, 6, 7 |
 
 ---
 
-*Documento criado na Fatia 1, atualizado na Fatia 2. Deve ser atualizado — não
-ignorado, e não reescrito do zero — a cada fatia que mudar o funcionamento
-descrito aqui.*
+*Documento criado na Fatia 1, atualizado na Fatia 2, na etapa de `find` real e
+na etapa de `listFiles`/`shareFile`. Deve ser atualizado — não ignorado, e não
+reescrito do zero — a cada fatia que mudar o funcionamento descrito aqui.*

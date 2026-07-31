@@ -240,9 +240,15 @@ Edite o `.env`:
 WS_BRAIN_URL=ws://IP-OU-DOMINIO-DO-CEREBRO:8080
 AGENT_NICK=PC-Daniel
 PAIRING_SECRET=<o MESMO valor do cérebro>
+AGENT_INDEX_ROOTS=C:\Users\SeuUsuario\Documents\Codes\DMG
+AGENT_MAX_FILE_MB=20
 ```
 
-Três cuidados:
+> **`AGENT_MAX_FILE_MB` é novidade da etapa de `listFiles`/`shareFile`.** Se
+> você instalou o Impetus antes dela, é a única variável nova a acrescentar —
+> as demais continuam iguais. Veja o que ela faz logo abaixo.
+
+Cinco cuidados:
 
 - **`WS_BRAIN_URL`** é `ws://` (não `http://`). Em teste na mesma máquina,
   `ws://localhost:8080`. Em máquinas diferentes, o IP ou domínio real do cérebro
@@ -251,6 +257,18 @@ Três cuidados:
   **único entre as máquinas**. Se dois agentes usarem o mesmo nick, o segundo a
   registrar derruba a conexão do primeiro.
 - **`PAIRING_SECRET`** tem que bater com o do cérebro, caractere por caractere.
+- **`AGENT_INDEX_ROOTS`** é opcional, novidade da etapa de `find` real. É a(s)
+  pasta(s) onde este agente procura projetos quando alguém pede pra achar algo.
+  Separadas por vírgula se forem mais de uma. **Cada subpasta imediata** da(s)
+  raiz(es) listada(s) vira um "projeto" candidato — não entra recursivamente
+  dentro delas. Sem essa variável, o agente sobe normalmente e `status` funciona
+  igual; só `find` não encontra nada nesta máquina.
+- **`AGENT_MAX_FILE_MB`** é opcional, novidade da etapa de `listFiles`/`shareFile`
+  — padrão **20** se não definida. É o tamanho máximo (em MB) de arquivo, ou de
+  pasta já zipada, que este agente aceita mandar pelo WhatsApp via `shareFile`.
+  Existe pra ficar bem abaixo do limite de 100MB por mensagem do transporte,
+  mesmo depois da inflação de ~33% do base64. Pedir um arquivo/pasta maior que
+  o teto responde com o motivo, sem travar o agente.
 
 Suba:
 
@@ -434,13 +452,12 @@ mensagens abaixo pelo WhatsApp. Em cada uma, confira também a linha
 |---|---|---|
 | `status` | a lista de máquinas | `intencao interpretada: status` |
 | `quais máquinas estão online?` | a mesma lista | `intencao interpretada: status` |
-| `onde está o projeto Flora?` | `Entendi: você quer localizar...` | `find \| alvo: "Flora"` |
 | `zipa o projeto X e manda` | `Entendi: você quer enviar...` | `shareFile \| alvo: "X"` |
 | `bom dia` | `Ainda não sei fazer isso.` | `intencao interpretada: unknown` |
 
 O segundo caso é o que prova a fatia: uma frase que **não contém a palavra
-`status`** precisa chegar no mesmo lugar. O terceiro e o quarto provam a
-ampliação: o Impetus reconhece o protocolo e o alvo mesmo sem saber executar.
+`status`** precisa chegar no mesmo lugar. O terceiro prova a ampliação: o
+Impetus reconhece protocolos ainda não implementados e o alvo, sem executar.
 
 Se uma frase equivalente cair em `"Ainda não sei fazer isso."`, a interpretação
 está funcionando mas classificando mal — o ajuste é no prompt do `intent.ts`, não
@@ -453,6 +470,63 @@ npm run bench:intent
 Ele roda 24 frases (4 por protocolo), nenhuma delas copiada dos exemplos do
 prompt — mede generalização, não memória. Reporta acerto de intenção e de
 extração de alvo. **Consome 24 requisições** (folgado no limite do Groq).
+
+### Find real
+
+Precisa de `AGENT_INDEX_ROOTS` preenchida em pelo menos um agente, apontando
+para uma pasta que tenha subpastas de verdade (cada subpasta = um "projeto" pro
+índice). Com isso configurado:
+
+| Mande | Esperado no WhatsApp | Esperado no log |
+|---|---|---|
+| `onde está o projeto <nome de uma subpasta real>?` | `Achei: <nome> — <nick>` com caminho, git e data | `intencao interpretada: find \| alvo: "..."` no cérebro; `respondendo cmd.request find "..." — N match(es)` no agente |
+| Mesma pergunta com um termo que bate em **duas** subpastas | Lista numerada, pedindo pra escolher | idem, mas o `find` agrega 2+ candidatos |
+| Responda `1` (ou o nome) à pergunta anterior | `Achei: <nome escolhido> — <nick>` | nenhuma chamada nova ao classificador — resolvido por `resolverEscolha` |
+| `acha um projeto` (sem dizer qual) | `Qual projeto ou pasta você quer localizar?` | `intencao interpretada: find` com `alvo` ausente no log |
+| Responda com um nome à pergunta anterior | Resultado da busca por esse nome | idem — vira a query direto, sem novo classificador |
+| `onde está o projeto xyz-inexistente?` | `Não encontrei nenhum projeto parecido com "xyz-inexistente"...` | `0 match(es)` no agente |
+
+Antes de testar pelo WhatsApp, dá para validar o mecanismo inteiro (índice,
+busca, agregação, formatação, disambiguação, pergunta pendente com expiração)
+sem depender dele nem de pastas reais:
+
+```bash
+npm run smoke:find
+```
+
+Cria pastas temporárias só para o teste, sobe um cérebro e um agente de verdade,
+e verifica match único, múltiplos candidatos, zero candidatos, e o ciclo
+completo da pergunta pendente — incluindo a expiração por TTL, sem precisar
+esperar os 5 minutos reais.
+
+### listFiles e shareFile (zip + envio)
+
+Reaproveita a mesma resolução de alvo do `find` — pedir `listFiles`/`shareFile`
+sem dizer o quê, ou com um termo ambíguo, funciona exatamente como já funciona
+pro `find` (pergunta pendente, disambiguação por número ou nome).
+
+| Mande | Esperado no WhatsApp |
+|---|---|
+| `lista o que tem na pasta <projeto>` | Lista com pastas primeiro (marcadas com `/`) e depois arquivos com tamanho |
+| `lista o que tem em <um arquivo, não pasta>` | `"<nome>" é um arquivo, não uma pasta — não tem conteúdo pra listar.` |
+| `me manda o <arquivo>` | `Mandando <nome>...` seguido do documento anexado, byte a byte igual ao original |
+| `zipa o projeto <nome> e manda` (pedindo uma **pasta**) | `Mandando <nome>.zip...` seguido do zip — **sem** `node_modules`/`.git`, respeitando o `.gitignore` da própria pasta |
+| Pedir um arquivo/pasta maior que `AGENT_MAX_FILE_MB` | `Não consegui enviar: arquivo tem ... acima do limite de ...` |
+
+A regra central: **pedir uma pasta em vez de um arquivo não muda o comando** —
+`shareFile` funciona pros dois, e é o próprio agente quem decide zipar ou não,
+com base no que existe de verdade no disco dele.
+
+Antes de testar pelo WhatsApp, dá para validar o mecanismo inteiro (listagem
+rasa, envio de arquivo único byte-idêntico, e zip de pasta com exclusão real
+de `node_modules` via `.gitignore`) sem depender dele nem de pastas reais:
+
+```bash
+npm run smoke:files
+```
+
+Esse teste **abre o zip gerado de verdade** (não só confere tamanho/assinatura)
+para garantir que a exclusão via `.gitignore` realmente aconteceu.
 
 ---
 
@@ -471,7 +545,13 @@ extração de alvo. **Consome 24 requisições** (folgado no limite do Groq).
 | Log: `429 Rate limit exceeded` | Estourou a cota diária da conta Groq. Só volta quando o limite virar. Se acontecer com frequência, troque `GROQ_MODEL` para `openai/gpt-oss-20b` (cota maior). |
 | Log: `não respeitou o schema` | O modelo em `GROQ_MODEL` não suporta modo estrito. Use `openai/gpt-oss-120b` ou `openai/gpt-oss-20b`, e valide com `npm run bench:intent`. |
 | Log: `resposta vazia ... mesmo após retry` | Instabilidade do modelo gratuito. O código já tenta 2 vezes; se persistir em toda mensagem, troque de modelo. |
+| `find` sempre responde "Não encontrei nenhum projeto..." | `AGENT_INDEX_ROOTS` não está configurada nesse agente, ou o caminho está errado/não existe. Confira o log do agente ao subir: `[index] N pasta(s) indexada(s) em M raiz(es)` — se `N` for 0, o caminho configurado não tem subpastas visíveis ou não existe. |
+| Perguntei "qual desses?" e a resposta virou um pedido novo em vez de escolher | A pergunta expirou (mais de ~5 min) ou a resposta não bateu com nenhum candidato por número nem por nome — é o comportamento esperado: nesse caso o Impetus não força, classifica a mensagem do zero. Peça de novo. |
+| `find` não encontra uma pasta que existe de verdade | Confirme que ela é **subpasta imediata** de uma das raízes em `AGENT_INDEX_ROOTS` — o índice não entra recursivamente. Uma pasta dois níveis abaixo não aparece. |
 | Frases equivalentes a `status` caem em `"Ainda não sei fazer isso."` | Classificação de fato errando. Rode `npm run bench:intent` para medir, e ajuste o prompt em `apps/brain/src/intent.ts` ou troque de modelo. |
+| `Não consegui enviar: arquivo tem ...MB, acima do limite de ...MB` | O arquivo (ou a pasta, já zipada) passa do teto configurado. Aumente `AGENT_MAX_FILE_MB` no `.env` do agente se o caso for legítimo. |
+| `listFiles` pedido para um arquivo (não pasta) responde que não tem conteúdo pra listar | Comportamento esperado — listar conteúdo só faz sentido para pasta. Peça `shareFile` pra receber o arquivo em si. |
+| `shareFile` de uma pasta manda um zip com `node_modules` dentro | Confira se a pasta tem um `.gitignore` de verdade excluindo `node_modules` — o agente só exclui o que o `.gitignore` da própria pasta (mais `node_modules`/`.git` sempre, mesmo sem `.gitignore`) manda excluir. |
 
 ---
 

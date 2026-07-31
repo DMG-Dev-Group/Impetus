@@ -5,6 +5,8 @@ import {
   type CmdRequestPayload,
   type CmdResponsePayload,
   type Envelope,
+  type FileEntry,
+  type FindMatch,
   type RegisterPayload,
   type RegisteredPayload,
 } from "@impetus/protocol";
@@ -13,6 +15,17 @@ import {
 export type StatusResult =
   | { nick: string; ok: true; uptimeSeconds: number }
   | { nick: string; ok: false; error: string };
+
+/** Resultado consolidado do `find` numa maquina — matches encontrados no indice dela. */
+export type FindAgentResult =
+  | { nick: string; ok: true; matches: FindMatch[] }
+  | { nick: string; ok: false; error: string };
+
+/** Resultado de pedir `listFiles`/`shareFile` a UM agente ja resolvido (nick + caminho conhecidos). */
+export type ListFilesResult = { ok: true; entries: FileEntry[] } | { ok: false; error: string };
+export type ShareFileResult =
+  | { ok: true; fileName: string; contentBase64: string; mimeType: string }
+  | { ok: false; error: string };
 
 interface PendingRequest {
   resolve: (payload: CmdResponsePayload) => void;
@@ -206,40 +219,121 @@ export class AgentRegistry {
    */
   async requestStatusFromAll(): Promise<StatusResult[]> {
     const alvos = [...this.agents.entries()];
-    return Promise.all(alvos.map(([nick, socket]) => this.requestStatus(nick, socket)));
+    return Promise.all(
+      alvos.map(async ([nick, socket]): Promise<StatusResult> => {
+        const resposta = await this.enviarComandoEAguardar(nick, socket, { command: "status" });
+
+        if ("erroTransporte" in resposta) {
+          return { nick, ok: false, error: resposta.erroTransporte };
+        }
+        if (resposta.command !== "status") {
+          return { nick, ok: false, error: `resposta com command inesperado: ${resposta.command}` };
+        }
+        if (resposta.ok && resposta.result) {
+          return { nick, ok: true, uptimeSeconds: resposta.result.uptimeSeconds };
+        }
+        return { nick, ok: false, error: resposta.error ?? "erro desconhecido" };
+      }),
+    );
   }
 
-  private requestStatus(nick: string, socket: WebSocket): Promise<StatusResult> {
-    return new Promise<StatusResult>((resolve) => {
+  /**
+   * Pergunta `find` para todas as maquinas conectadas em paralelo, com a mesma
+   * logica de timeout por agente do `status`. Quem chama decide o que fazer com
+   * matches vindos de maquinas diferentes (mesmo projeto pode existir em mais
+   * de uma).
+   */
+  async requestFindFromAll(query: string): Promise<FindAgentResult[]> {
+    const alvos = [...this.agents.entries()];
+    return Promise.all(
+      alvos.map(async ([nick, socket]): Promise<FindAgentResult> => {
+        const resposta = await this.enviarComandoEAguardar(nick, socket, { command: "find", query });
+
+        if ("erroTransporte" in resposta) {
+          return { nick, ok: false, error: resposta.erroTransporte };
+        }
+        if (resposta.command !== "find") {
+          return { nick, ok: false, error: `resposta com command inesperado: ${resposta.command}` };
+        }
+        if (resposta.ok) {
+          return { nick, ok: true, matches: resposta.matches };
+        }
+        return { nick, ok: false, error: resposta.error ?? "erro desconhecido" };
+      }),
+    );
+  }
+
+  /**
+   * Pede `listFiles`/`shareFile` a UM agente especifico — diferente de
+   * `status`/`find`, que perguntam a TODOS. Faz sentido so depois que um
+   * candidato (nick + caminho) ja foi resolvido, tipicamente por uma busca
+   * `find` previa.
+   */
+  async requestListFiles(nick: string, path: string): Promise<ListFilesResult> {
+    const socket = this.agents.get(nick);
+    if (!socket) return { ok: false, error: `"${nick}" nao esta mais conectado` };
+
+    const resposta = await this.enviarComandoEAguardar(nick, socket, { command: "listFiles", path });
+    if ("erroTransporte" in resposta) return { ok: false, error: resposta.erroTransporte };
+    if (resposta.command !== "listFiles") {
+      return { ok: false, error: `resposta com command inesperado: ${resposta.command}` };
+    }
+    if (resposta.ok) return { ok: true, entries: resposta.entries };
+    return { ok: false, error: resposta.error ?? "erro desconhecido" };
+  }
+
+  async requestShareFile(nick: string, path: string): Promise<ShareFileResult> {
+    const socket = this.agents.get(nick);
+    if (!socket) return { ok: false, error: `"${nick}" nao esta mais conectado` };
+
+    const resposta = await this.enviarComandoEAguardar(nick, socket, { command: "shareFile", path });
+    if ("erroTransporte" in resposta) return { ok: false, error: resposta.erroTransporte };
+    if (resposta.command !== "shareFile") {
+      return { ok: false, error: `resposta com command inesperado: ${resposta.command}` };
+    }
+    if (resposta.ok && resposta.fileName && resposta.contentBase64 && resposta.mimeType) {
+      return { ok: true, fileName: resposta.fileName, contentBase64: resposta.contentBase64, mimeType: resposta.mimeType };
+    }
+    return { ok: false, error: resposta.error ?? "erro desconhecido" };
+  }
+
+  /**
+   * Envia um `cmd.request` generico para um agente e aguarda o `cmd.response`
+   * correspondente (casado pelo `id` do envelope), com timeout.
+   *
+   * Extraido de `requestStatus` quando `find` virou o segundo comando a
+   * precisar do mesmo padrao pergunta/resposta — generalizar antes disso teria
+   * sido abstrair sem um segundo uso real para validar a forma certa.
+   */
+  private enviarComandoEAguardar(
+    nick: string,
+    socket: WebSocket,
+    payload: CmdRequestPayload,
+  ): Promise<CmdResponsePayload | { erroTransporte: string }> {
+    return new Promise((resolve) => {
       const id = randomUUID();
 
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        resolve({ nick, ok: false, error: "sem resposta" });
+        resolve({ erroTransporte: "sem resposta" });
       }, this.commandTimeoutMs);
 
       this.pending.set(id, {
         timer,
-        resolve: (payload) => {
-          if (payload.ok && payload.result) {
-            resolve({ nick, ok: true, uptimeSeconds: payload.result.uptimeSeconds });
-          } else {
-            resolve({ nick, ok: false, error: payload.error ?? "erro desconhecido" });
-          }
-        },
+        resolve: (respostaPayload) => resolve(respostaPayload),
       });
 
       const enviado = this.send(socket, {
         id,
         type: "cmd.request",
         to: nick,
-        payload: { command: "status" } satisfies CmdRequestPayload,
+        payload,
       });
 
       if (!enviado) {
         clearTimeout(timer);
         this.pending.delete(id);
-        resolve({ nick, ok: false, error: "conexao indisponivel" });
+        resolve({ erroTransporte: "conexao indisponivel" });
       }
     });
   }

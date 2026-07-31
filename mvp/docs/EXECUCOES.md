@@ -14,9 +14,13 @@ de atualização datada, como aconteceu com o critério 2 da Fatia 1.
 
 | Data | Entrada | Status |
 |---|---|---|
-| 19/07/2026 | [Fatia 1 — Esqueleto Andante](#fatia-1--esqueleto-andante) | ✅ entregue e validado em uso real |
+| 19/07/2026 | [Fatia 1 — Esqueleto Andante](#fatia-1--esqueleto-andante) | ✅ entregue; as duas incertezas (Baileys + NAT) fechadas em 22/07/2026 com dois PCs reais |
 | 19/07/2026 | [Correção — números autorizados no WhatsApp](#correção--números-autorizados-não-reconhecidos-no-whatsapp) | ✅ resolvido e validado em uso real |
 | 19/07/2026 | [Fatia 2 — Interpretação de linguagem natural](#fatia-2--interpretação-de-linguagem-natural) | ✅ validado em uso real; 5 protocolos + campo alvo; migrado para Groq (`gpt-oss-120b`) com **24/24 de intenção e 17/17 de alvo** |
+| 22/07/2026 | [Find real — índice local, ambiguidade e a primeira fatia de contexto](#find-real--índice-local-ambiguidade-e-a-primeira-fatia-de-contexto) | ✅ implementado e medido — `npm run smoke:find`, todos os checks passam |
+| 22/07/2026 | [Primeiro uso real do `find` — dois bugs, nenhum de lógica de busca](#primeiro-uso-real-do-find--dois-bugs-nenhum-de-lógica-de-busca) | ✅ corrigido e verificado contra a pasta real do usuário |
+| 22/07/2026 | [Segundo uso real — arquivos soltos não eram indexados](#segundo-uso-real--arquivos-soltos-não-eram-indexados) | ✅ corrigido e verificado contra o disco real |
+| 31/07/2026 | [listFiles e shareFile — listar, zipar e enviar](#listfiles-e-sharefile--listar-zipar-e-enviar) | ✅ implementado e medido — `npm run smoke:files`, todos os checks passam |
 
 ---
 
@@ -84,12 +88,37 @@ número dedicado do Impetus em mãos.
 físicos em redes diferentes, ainda não foi testada — só agentes locais na mesma
 máquina.
 
+> **Atualização (22/07/2026):** testado com dois PCs físicos de verdade. Na
+> tentativa de LAN, os dois computadores acabaram nem estando na mesma rede
+> (`ipconfig` revelou sub-redes diferentes — `192.168.21.x`/`10.174.83.x` no PC do
+> agente, `192.168.248.x` no do cérebro), então o teste seguiu direto para o
+> cenário que mais importa: **redes diferentes**. Subimos um tunnel público
+> (`cloudflared tunnel --url http://localhost:8080`, instalado via
+> `winget install Cloudflare.cloudflared`) apontando para a porta 8080 do cérebro,
+> confirmamos que a URL respondia (`HTTP 426 Upgrade Required` — a resposta
+> correta de um servidor WebSocket a uma requisição HTTP comum, prova de que o
+> tráfego chegava até o `ws`), e o agente conectou usando `WS_BRAIN_URL=wss://<url
+> do tunnel>` — sem porta, sem qualquer configuração de roteador do lado do
+> agente. Registrou e apareceu no `status` do WhatsApp.
+>
+> **A segunda incerteza está fechada.** Um agente atrás de NAT, numa rede
+> completamente diferente da do cérebro, conecta sem exigir nada além do
+> `WS_BRAIN_URL` apontando para um endereço público — validando a decisão de
+> arquitetura de que a conexão é sempre iniciada pelo agente. Bônus não pedido:
+> como o tunnel fala `wss://`, o `PAIRING_SECRET` trafegou criptografado neste
+> teste — o que não resolve a dívida de "sem TLS em produção" (o tunnel é
+> temporário, a URL muda a cada reinício), mas prova que o cliente já fala `wss://`
+> nativamente quando o transporte oferece.
+>
+> Com as duas incertezas fechadas, **a Fatia 1 está inteiramente provada em uso
+> real** — não só em teste simulado.
+
 **Como os critérios 3–7 foram verificados:** por um teste de fumaça automatizado
 (`npm run smoke`) que sobe um cérebro real, conecta agentes reais nele e exercita
 registro, recusa por secret inválido, `status`, desconexão, reinício do cérebro
-com reconexão, e timeout de agente mudo. Os sete checks passam. **Não foi testado
-com dois PCs físicos em redes diferentes** — a travessia de NAT real (a segunda
-incerteza que a fatia existe para eliminar) também depende de teste manual do time.
+com reconexão, e timeout de agente mudo. Os sete checks passam. A travessia de
+NAT real, que também dependia de teste manual do time, foi confirmada na
+atualização acima.
 
 ### Bug encontrado durante a verificação (e corrigido)
 
@@ -925,6 +954,438 @@ segue duplicado nos dois lados, como pedido.
   de API antes de qualquer decisão.
 
 ---
+
+## Find real — índice local, ambiguidade e a primeira fatia de contexto
+
+**Data:** 22/07/2026
+**Status:** ✅ implementado e medido — `npm run smoke:find`, 22 checks, todos passam
+
+### Contexto da decisão
+
+Com a Fatia 2 fechada e a travessia de NAT confirmada, ficaram três candidatos
+óbvios para a próxima etapa: contexto de conversa, múltiplos comandos por
+mensagem, e tornar o `find` funcional. O time propôs os três; a recomendação
+dada foi **`find` primeiro**, por um motivo estrutural: é o único que desbloqueia
+capacidade nova (o `alvo` já extraído pela Fatia 2 não era usado para nada), e a
+ambiguidade que ele produz (mais de uma pasta candidata) **já é** uma fatia
+mínima de contexto — "há uma pergunta pendente, a próxima mensagem responde a
+ela" — bem mais estreita que o sistema geral de referência a pronomes. Múltiplos
+comandos por mensagem ficou para depois de existir um segundo protocolo real
+para validar comportamento composto contra algo. O time aprovou essa ordem.
+
+### O que foi construído
+
+**Contrato (`packages/protocol`).** `CmdRequestPayload`/`CmdResponsePayload`
+deixaram de ser um formato único e viraram união discriminada por `command` —
+exatamente o que o comentário da Fatia 2 já antecipava ("quando cada um for
+implementado, provavelmente vira uma união discriminada"). `status` manteve o
+formato existente; `find` ganhou `FindRequestPayload` (`query: string`) e
+`FindResponsePayload` (`matches: FindMatch[]`), com `FindMatch` carregando
+`name`, `path`, `isGitRepo`, `lastModified`. `gitStatus`/`listFiles`/`shareFile`
+continuam só como valores de `CommandName`, sem payload — não foram tocados.
+
+**Índice local (`apps/agent/src/fileIndex.ts`, novo).** Cada agente escaneia as
+raízes configuradas em `AGENT_INDEX_ROOTS` (variável nova, opcional, separada
+por vírgula). Escaneia **só o primeiro nível** de subpastas de cada raiz — cada
+subpasta é "um projeto" — sem entrar recursivamente dentro delas (evita o custo
+de escanear `node_modules` e afins; conteúdo de dentro do projeto é problema do
+`listFiles`, de uma fatia futura, não do `find`). Refresh por
+`setInterval` a cada 5 minutos, não por observador de sistema de arquivos — o
+`DESCRITIVO_MVP.md` permite qualquer um dos dois, e um watcher traria
+dependência e complexidade cross-platform sem necessidade clara agora
+(simplicidade sobre sofisticação aparente, de novo).
+
+Busca por normalização (minúsculo, sem acento — comparação por **código
+Unicode numérico**, não regex, para não deixar um combining character solto no
+arquivo-fonte) e pontuação simples: exato > começa com > contém (nos dois
+sentidos). Sem biblioteca de fuzzy matching — é um índice leve, não um motor de
+busca, e o objetivo é achar "onde", não ranquear com precisão.
+
+**Agente (`wsClient.ts`).** Passou a tratar `find`, delegando ao índice. Mantido
+um ramo de "comando desconhecido" como rede de segurança (o tipo atual só cobre
+`status`/`find`, então esse ramo não é alcançável hoje, mas protege contra um
+cérebro de outra versão mandando algo que este agente ainda não conhece).
+
+**Cérebro — `wsServer.ts` generalizado.** O padrão pergunta/resposta que só
+existia para `status` (`requestStatus` privado, com `Map` de pendências por id
+de envelope e timeout por agente) foi extraído para
+`enviarComandoEAguardar`, genérico por payload. `requestStatusFromAll` virou
+fininho por cima dele; `requestFindFromAll` é o equivalente para `find`,
+perguntando a todos os agentes conectados em paralelo e devolvendo os matches
+com o nick de origem. **Generalizado só agora, no segundo uso** — abstrair no
+primeiro teria sido desenhar para uma forma hipotética sem um segundo caso real
+para validar.
+
+**Cérebro — pergunta pendente (`pendingQuestions.ts`, novo).** Esta é a "fatia
+mínima de contexto" da decisão de sequenciamento: um `Map` em memória, chave =
+número de telefone canônico, **um slot por vez** (WhatsApp aqui é sempre 1:1).
+Dois tipos:
+
+- `find_target` — `find` sem alvo ("onde tá o projeto?" sem dizer qual): a
+  próxima mensagem, crua, vira a query da busca.
+- `find_disambiguation` — mais de um candidato encontrado: a próxima mensagem
+  escolhe um deles, por número (`1`, `2`...) ou por substring do nome/nick,
+  resolvido **deterministicamente** (`resolverEscolha`) — não vale chamar o
+  classificador de novo só para decidir qual opção a pessoa escolheu.
+
+TTL de 5 minutos por padrão (injetável no construtor só para teste, sem precisar
+esperar 5 minutos de verdade num script). Se a resposta não bater com nenhum
+candidato, **não força**: a pergunta pendente é descartada e a mensagem é
+tratada como pedido novo, classificada do zero. Sem persistência, mesmo
+princípio do `AgentRegistry` — se o cérebro reiniciar, a pergunta pendente se
+perde e a pessoa só precisa perguntar de novo.
+
+**`whatsapp.ts`.** `CommandHandler` passou a receber o número **canônico** do
+remetente (já normalizado pelo `canonicalizarNumero` existente da correção de
+`@lid`/9º dígito) — é a chave de identidade usada pelo `PendingQuestions`.
+
+**`index.ts` — o fluxo completo.** Antes de classificar qualquer mensagem,
+`onCommand` consulta `pendingQuestions.consumir(numero)`. Se houver uma pergunta
+pendente e não expirada, tenta resolver a mensagem como resposta a ela; só cai
+no classificador de intenção se não houver pendência ou se a resposta não bateu
+com nenhum candidato. `tratarFind` agrega os resultados de todos os agentes e
+responde conforme a contagem: zero (`"Não encontrei..."`), um
+(`formatarMatchUnico`, com nome/máquina/caminho/git/última modificação), ou mais
+de um (`formatarListaDisambiguacao`, numerada, guardando a pergunta pendente).
+
+### Decisão que vale registrar: agentes com erro são silenciosamente ignorados no `find`
+
+Diferente do `status` — onde uma máquina que não respondeu vira uma linha
+`"PC-X — sem resposta"`, porque a própria máquina é a informação pedida — no
+`find` um agente com erro/timeout simplesmente não contribui matches, sem
+aparecer na resposta. Justificativa: quem pergunta "onde está o projeto X" quer
+saber onde o projeto está, não um relatório de saúde dos agentes. Se isso se
+mostrar confuso em uso real (ex.: uma máquina caiu bem na hora e o projeto só
+existia nela), é reversível — mas registrado aqui como escolha deliberada, não
+descuido.
+
+### Regressão pega pelo próprio smoke test
+
+`npm run smoke` (Fatia 1) quebrou na primeira tentativa: `scripts/smoke-transport.ts`
+constrói `AgentClient` diretamente, e o novo campo obrigatório `indexRoots` não
+estava sendo passado. Corrigido adicionando `indexRoots: []` às duas construções
+do arquivo (a normal e a de secret inválido) — o smoke test cumpriu exatamente a
+função de existir: pegar uma quebra de contrato antes de qualquer uso real.
+
+### Verificação
+
+**`scripts/smoke-find.ts` + `npm run smoke:find`** (novo) — sobe cérebro e
+agente reais, com o índice apontado para pastas temporárias criadas só para o
+teste (`FloraBeauty` com `.git`, `Flora-Docs` sem, `Tendresse` com `.git`,
+`PastaQualquer` irrelevante). Cobre:
+
+- match único (`"tendresse"` → 1 resultado, nome certo, `isGitRepo: true`);
+- múltiplos candidatos (`"flora"` → 2 resultados, `FloraBeauty` + `Flora-Docs`,
+  `PastaQualquer` corretamente de fora);
+- zero candidatos (`"xyz-nao-existe"` → 0);
+- as duas funções de formatação (match único cita nome e "é um repositório
+  git"; lista de disambiguação numera e cita os dois nomes);
+- `resolverEscolha` — por número, por nome (case-insensitive), resposta sem
+  relação (`null`), número fora do intervalo (`null`);
+- `PendingQuestions` — ciclo definir/consumir, consumo único (segunda leitura
+  devolve `null`), e expiração por TTL (usando o construtor com TTL injetado,
+  sem esperar os 5 minutos reais).
+
+**Todos os 22 checks passam**, junto com o `npm run smoke` (Fatia 1, sem
+regressão) e `npm run build` limpo nos três workspaces.
+
+### Fora de escopo (deliberado)
+
+- **Contexto de conversa geral** (resolver "aquele projeto" sem uma pergunta
+  pendente explícita) — o `PendingQuestions` foi construído para generalizar
+  para isso depois (mesma peça, escopo maior), não para fazer isso agora.
+- **Múltiplos comandos por mensagem** — conforme a sequência decidida, fica para
+  quando houver um segundo protocolo real além de `find` para validar
+  comportamento composto.
+- **`gitStatus`, `listFiles`, `shareFile`** — continuam só reservados no
+  contrato. `PENDENTES` em `index.ts` teve `find` removido do
+  `Record<Exclude<CommandName, "status" | "find">, string>`.
+- **Modelo de confirmação** — segue não sendo necessário: `find` é leitura pura
+  (consulta o índice, não altera nada), então a regra do `00_DECISOES.md`
+  ("leitura simples → sem confirmação") já cobre.
+
+---
+
+## Primeiro uso real do `find` — dois bugs, nenhum de lógica de busca
+
+**Data:** 22/07/2026
+**Status:** ✅ corrigido e verificado contra a pasta real do usuário
+
+### O relato
+
+O time testou `find` pedindo o projeto `Impetus` (que fica dentro da pasta
+`DMG`, junto com `DMG_SaaS`) e nenhum dos dois foi encontrado. A pergunta que
+acompanhou o relato foi pertinente: **antes de mexer mais no `find`, não valeria
+construir `listFiles` primeiro, só para confirmar que o agente tem acesso de
+verdade ao disco?**
+
+A resposta prática foi **não precisar** — o `find` já registra exatamente essa
+informação no log desde que foi construído (`[index] N pasta(s) indexada(s) em
+M raiz(es)`, mais um aviso por raiz que falhar ao ler). Bastou olhar esse log em
+vez de construir uma feature nova só para diagnosticar.
+
+### Causa raiz nº 1 — o `.env` nunca foi editado de verdade
+
+```
+AGENT_INDEX_ROOTS=C:\Users\SeuUsuario\Documents\Codes\DMG
+```
+
+Esse era o valor **literal do `.env.example`**, com `SeuUsuario` nunca trocado
+pelo usuário real da máquina. O caminho não existe, então `readdirSync` falha
+com `ENOENT` — capturado e logado como aviso por raiz (não derruba o agente),
+resultando em `0 pasta(s) indexada(s)`. Todo `find` respondia "não encontrei
+nada" porque **o índice estava genuinamente vazio**, não por falha de busca.
+
+Confirmado que a pasta real (`C:\Users\leandro franca dias\Documents\Codes\DMG`)
+existe e contém `Impetus`, `DMG_SaaS`, `CNM` e `Sangre` como subpastas imediatas
+— exatamente o que o `find` deveria enxergar. `.env` corrigido com o caminho
+real.
+
+**Prevenção:** o `.env.example` tinha um placeholder plausível demais —
+`SeuUsuario` parece um valor que poderia ser real, diferente do
+`PAIRING_SECRET` (`troque-isto-por-um-valor-aleatorio-longo`, que é
+inequivocamente instrução, não valor). Adicionado aviso explícito
+("TROQUE ISTO... NÃO existe, é só exemplo") no comentário do `.env.example`.
+
+### Causa raiz nº 2 — encontrada verificando, não presumindo
+
+Depois de corrigir o caminho, antes de mandar o time testar de novo, rodei uma
+verificação direta do `FileIndex` contra a pasta real (não os diretórios
+temporários do `smoke-find.ts` — o disco de verdade). `busca 'impetus'` e
+`busca 'sangre'` bateram certo, mas **`busca 'dmg saas'` (com espaço) voltou
+vazia** — só `busca 'dmg_saas'` (com underscore, igual ao nome literal da pasta)
+funcionava.
+
+Causa: a normalização (`normalizar()` em `fileIndex.ts`) tratava espaço,
+underscore, hífen e ponto como caracteres **diferentes** entre si — comparação
+por substring exigia bater exatamente. Ninguém fala "dmg underscore saas" numa
+frase natural; a forma como uma pasta é nomeada no disco (convenção de
+programador) e a forma como uma pessoa diz o nome em voz alta são coisas
+diferentes, e o índice só normalizava acento/maiúscula, não separador.
+
+**Correção:** espaço, `_`, `-` e `.` agora são removidos da forma normalizada
+antes de comparar — `"DMG_SaaS"`, `"dmg saas"`, `"dmg-saas"` e `"dmgsaas"` todos
+viram a mesma chave de comparação. Reverificado: as quatro buscas (`impetus`,
+`dmg_saas`, `dmg saas`, `sangre`) encontram a pasta certa.
+
+### Por que isso não apareceu no `smoke-find.ts`
+
+O banco de pastas de teste (`FloraBeauty`, `Flora-Docs`, `Tendresse`,
+`PastaQualquer`) não tinha nenhum caso de "mesmo nome, separador diferente" —
+`Flora-Docs` tem hífen, mas nunca foi buscado como `"flora docs"` com espaço no
+lugar do hífen. **Pastas de teste sintéticas cobrem o que o autor do teste
+pensou em testar; a pasta real do usuário expôs um caso que não tinha sido
+imaginado.** Fica registrado como lembrete: a verificação com dados reais, deste
+mesmo formato geral, tem valor além do smoke test automatizado — foi ela que
+achou este bug, não o `smoke-find.ts`, mesmo ele passando 100%.
+
+### Verificação
+
+Rodado `npm run build` (limpo), `npm run smoke` (Fatia 1, sem regressão) e
+`npm run smoke:find` (22 checks, todos passam) depois da correção do separador
+— confirmando que a normalização mais ampla não quebrou nenhum caso já coberto
+(`Flora-Docs` continua distinto de `FloraBeauty` na contagem de candidatos,
+mesmo com hífen removido da comparação, porque a pontuação por conteúdo
+continua distinguindo os dois nomes).
+
+**Nenhuma das duas causas era bug de lógica de busca** — a pergunta original do
+time ("será que ele tem acesso mesmo?") apontava na direção certa de
+investigação, só que a resposta não exigiu uma feature nova: o log que já
+existia, mais uma verificação direta contra o disco real, foram suficientes.
+
+---
+
+## Segundo uso real — arquivos soltos não eram indexados
+
+**Data:** 22/07/2026
+**Status:** ✅ corrigido e verificado contra o disco real
+
+### O relato
+
+Depois da correção anterior, o time confirmou que `find` já achava pastas. Mas
+testando um caso a mais: existe um `DMG_SaaS.rar` (arquivo compactado) na raiz
+de `DMG`, ao lado da pasta `DMG_SaaS`. Buscando pelo nome **completo, com
+extensão**, o Impetus devolveu a **pasta**, não o arquivo.
+
+### Causa — duas coisas encadeadas, de novo
+
+**1. Arquivos soltos nunca entravam no índice.** `construir()` filtrava
+`if (!entrada.isDirectory()) continue` — um arquivo na raiz configurada nunca
+virava candidato, só pastas. O índice não tinha nem como saber que
+`DMG_SaaS.rar` existia.
+
+**2. A pontuação tinha um ramo frágil que preenchia essa lacuna do jeito
+errado.** Normalizado, `"DMG_SaaS.rar"` vira `"dmgsaasrar"` — o `.` da extensão
+é removido como separador (a mesma normalização que corrigiu `"dmg saas"` vs
+`"DMG_SaaS"` na entrada anterior). Isso "cola" `rar` direto em `dmgsaas`. O
+ramo de pontuação `queryNormalizada.includes(nomeNormalizado)` ("a busca contém
+o nome da pasta") aceitava isso como match fraco (pontuação 40): a pasta
+`DMG_SaaS` (→ `dmgsaas`) está contida em `dmgsaasrar`. Sem nenhum arquivo
+indexado para competir, a pasta era o único resultado — errado, mas plausível
+o bastante pra passar despercebido.
+
+Vale registrar a ironia: **a correção da entrada anterior (tratar `.` como
+separador) é o que tornou este bug possível.** Sem aquela mudança, o ponto
+antes da extensão quebraria a comparação e a pasta não bateria de jeito nenhum
+— o preço de resolver "dmg saas" vs "DMG_SaaS" foi abrir esta lacuna. Registrado
+porque é o tipo de interação entre correções que só aparece testando de novo, não
+relendo o diff isolado.
+
+### Correção — duas partes, não uma
+
+**Indexar arquivos soltos, não só pastas.** O escaneamento (ainda um nível só,
+ainda sem entrar dentro de pastas) agora inclui arquivos no mesmo nível.
+`FindMatch` ganhou o campo `kind: "folder" | "file"` — necessário porque
+`isGitRepo` não faz sentido pra um arquivo, e o cérebro precisa saber como
+formatar a resposta (`formatarMatchUnico` agora omite a linha de git quando
+`kind === "file"`).
+
+**Removido o ramo de pontuação "query contém o nome".** Era o único caminho
+pelo qual esse falso positivo acontecia, e nenhum caso de uso real dependia
+dele — os outros três ramos (exato, começa com, nome contém a query) cobrem os
+padrões de busca que de fato importam. Com arquivos agora indexados e esse ramo
+fora, buscar `"DMG_SaaS.rar"` bate **exato** no arquivo (pontuação 100) e a
+pasta não entra em nenhum ramo (pontuação 0) — resultado limpo, sem
+coincidência.
+
+### Verificação
+
+**`scripts/smoke-find.ts` ganhou o cenário exato do bug relatado:** uma pasta
+`DMG_SaaS` com um arquivo `DMG_SaaS.rar` do lado, na mesma fixture de teste.
+Novos checks: buscar com extensão acha **só o arquivo** (`kind: "file"`,
+`isGitRepo: false`); buscar sem extensão acha **os dois** (ambiguidade correta,
+já resolvida pelo fluxo de disambiguação existente — não é bug, é a realidade
+de haver duas coisas com nome parecido).
+
+**Reverificado contra o disco real** (não só a fixture sintética) — a mesma
+disciplina da correção anterior:
+
+```
+busca 'DMG_SaaS.rar': [{ name: 'DMG_SaaS.rar', kind: 'file', isGitRepo: false, ... }]
+busca 'DMG_SaaS' (sem ext): [ 'DMG_SaaS (folder)', 'DMG_SaaS.rar (file)' ]
+busca 'impetus': [ 'Impetus (folder)' ]
+```
+
+`npm run build` limpo, `npm run smoke` (Fatia 1, sem regressão) e
+`npm run smoke:find` (todos os checks, incluindo os novos) passam.
+
+### A pergunta que ficou em aberto: buscar arquivo dentro de pastas
+
+O time perguntou, na mesma mensagem, se seria válido já buscar **arquivos
+específicos dentro de projetos** (não soltos na raiz — dentro de uma pasta de
+projeto, recursivamente). Essa pergunta **não foi respondida com código** —
+foi respondida com uma recomendação, registrada na resposta ao usuário desta
+mesma data: isso é escopo bem maior que "indexar o primeiro nível" (recursão,
+ruído de `node_modules`/`.git`, respeito a `.gitignore` como já previsto pro
+zip no `DESCRITIVO_MVP.md`), e mapeia mais naturalmente para o `listFiles`
+reservado — generalizado para aceitar um filtro, em vez de aberto para busca
+recursiva livre entre todos os projetos. Fica como decisão pendente do time,
+não como próxima tarefa assumida.
+
+---
+
+## listFiles e shareFile — listar, zipar e enviar
+
+**Status:** ✅ implementado e medido — `npm run smoke:files`, todos os checks passam
+
+### O pedido
+
+"vamos implementar 3 coisas, o listfile, zipar arquivo, e enviar arquivo (se eu
+pedir por uma pasta ao inves de um arquivo, ele deve zipar e enviar o zip)" —
+os dois protocolos que ainda faltavam do contrato original (`listFiles`,
+`shareFile`), com a regra explícita: pedir uma **pasta** em vez de um arquivo
+deve zipar e mandar o zip, sem precisar pedir "zipa" à parte.
+
+### O que foi construído
+
+**Protocolo** (`packages/protocol/src/index.ts`): `ListFilesRequestPayload`/
+`ListFilesResponsePayload` (com `FileEntry`: name, isDirectory, sizeBytes?,
+lastModified) e `ShareFileRequestPayload`/`ShareFileResponsePayload` (com
+fileName/contentBase64/mimeType), entrando nas uniões
+`CmdRequestPayload`/`CmdResponsePayload` no mesmo padrão de `status`/`find`.
+Só `gitStatus` continua reservado sem payload.
+
+**Agente:**
+- `listFiles.ts` — listagem rasa (um nível, mesmo critério de oculto do
+  índice de `find`).
+- `shareFile.ts` — arquivo único (lê e base64, mimetype por tabela fixa de
+  extensão) ou zip de pasta (via `archiver` + `ignore`, respeitando o
+  `.gitignore` da própria pasta mais `node_modules`/`.git` sempre). Teto de
+  tamanho configurável (`AGENT_MAX_FILE_MB`, padrão 20MB), checado **antes**
+  de zipar via uma soma prévia do que entraria (já descontando `.gitignore`)
+  — evita ter que abortar um stream de compressão no meio.
+- `wsClient.ts` ganhou dois handlers assíncronos para os dois comandos.
+
+**Cérebro:**
+- `wsServer.ts` ganhou `requestListFiles(nick, path)`/`requestShareFile(nick,
+  path)` — direcionados a UM agente específico (diferente de `status`/`find`,
+  que perguntam a todos), reaproveitando o `enviarComandoEAguardar` genérico.
+- `pendingQuestions.ts` generalizado: `kind: "find_target"|"find_disambiguation"`
+  virou `kind: "target"|"disambiguation"` + `acao: "find"|"listFiles"|"shareFile"`
+  — as 3 ações compartilham a mesma resolução de alvo por busca.
+  `resolverEscolha` não mudou (já era agnóstico à ação).
+- `whatsapp.ts` ganhou `enviarArquivo` — capacidade de mandar um documento
+  (não só texto), passada ao `CommandHandler` como 4º parâmetro.
+- `index.ts` — o antigo `tratarFind` virou o par genérico
+  `resolverEExecutar`/`executarAcao`, usado pelas 3 ações. `listFiles` recusa
+  educadamente um alvo que é arquivo, não pasta (`"X" é um arquivo, não uma
+  pasta — não tem conteúdo pra listar.`); `shareFile` funciona pra arquivo E
+  pasta sem ramo especial no cérebro — quem decide zipar é o agente.
+- `format.ts` ganhou `formatarListaArquivos`.
+
+### Decisão tomada sem perguntar de novo: confirmação
+
+O `00_DECISOES.md` já classifica "leitura simples" e "cópia/compartilhamento
+(zipar e enviar, não altera a origem)" como **sem confirmação** — os quatro
+comandos implementados (`status`, `find`, `listFiles`, `shareFile`) se
+encaixam nas duas categorias. O placeholder `cmd.confirm` continua reservado,
+sem fluxo, honrando a decisão já registrada em vez de reabri-la.
+
+### Pegadinha real: `archiver@8` é ESM puro
+
+Ao pesquisar a API antes de codar, a versão instalada inicialmente era
+`archiver@8.0.0` — que na verdade é `"type": "module"` (ESM puro, sem
+`require()` possível) e cujos tipos (`@types/archiver@8`) **não declaram mais**
+a função-fábrica clássica `archiver(formato, opções)`, só classes
+(`new ZipArchive(...)`). Importar isso de um projeto `"module": "commonjs"`
+(como este) compila sem erro de tipo aparente, mas quebra em **runtime** com
+`ERR_REQUIRE_ESM` — o tipo de falha que só aparece rodando, não lendo o
+código. Descoberto ANTES de rodar (lendo o `package.json` do pacote instalado
+e comparando com o `tsconfig`), não depois de quebrar em produção. Corrigido
+fixando `archiver@7.0.1` (última major ainda CommonJS, com a função-fábrica e
+os tipos correspondentes em `@types/archiver@7`).
+
+Vale o mesmo princípio já registrado outras vezes nesta timeline: **verificar
+contra o pacote de verdade instalado, não contra o que a memória de treino
+assume sobre uma API** — neste caso isso preveniu o bug em vez de só
+diagnosticá-lo depois.
+
+### Verificação
+
+`scripts/smoke-files.ts` (novo): sobe cérebro + agente reais, com uma pasta de
+projeto sintética (`src/`, `README.md`, `node_modules/`, `.gitignore`
+excluindo `node_modules`) e um arquivo solto (`relatorio.pdf`). Cobre:
+
+- `listFiles` — contagem e nomes corretos no primeiro nível, `node_modules`
+  aparece na LISTAGEM (só o zip filtra por `.gitignore`, listar não filtra),
+  pasta vazia, agente que não existe mais.
+- `shareFile` de arquivo único — round-trip **byte-idêntico** ao original,
+  mimetype correto.
+- `shareFile` de pasta — vira `.zip`; **o zip é de fato aberto** (via
+  `adm-zip`, devDependency só de teste) e conferido: `node_modules`
+  realmente ausente, `README.md`/`src/index.ts` presentes, `.gitignore`
+  presente (nada o exclui a si mesmo), conteúdo do `README.md` dentro do zip
+  idêntico ao original — não bastava conferir só tamanho/assinatura do zip,
+  isso não provaria que a exclusão funcionou de verdade.
+- Teto de tamanho — arquivo de 1MB com `AGENT_MAX_FILE_MB=0.5` responde
+  `ok:false` com o motivo.
+
+`npm run build` (monorepo inteiro), `npm run smoke` (Fatia 1) e
+`npm run smoke:find` (find) seguem passando sem regressão —
+`scripts/smoke-find.ts` precisou de um ajuste de forma (`kind:"find_target"` →
+`kind:"target", acao:"find"`) para acompanhar a generalização do
+`PendingQuestions`, sem mudança de comportamento.
+
 ---
 
 *Log iniciado na execução da Fatia 1. Ordem cronológica: a entrada mais antiga vem primeiro.*

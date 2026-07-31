@@ -11,10 +11,13 @@
   },
   "dependencies": {
     "@impetus/protocol": "*",
+    "archiver": "^7.0.1",
     "dotenv": "^16.4.5",
+    "ignore": "^7.0.6",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/node": "^22.9.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",

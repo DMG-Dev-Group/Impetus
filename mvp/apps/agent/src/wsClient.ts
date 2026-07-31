@@ -8,6 +8,9 @@ import {
   type RegisterPayload,
   type RegisteredPayload,
 } from "@impetus/protocol";
+import { FileIndex } from "./fileIndex";
+import { listarConteudo } from "./listFiles";
+import { prepararEnvio } from "./shareFile";
 
 const INTERVALO_HEARTBEAT_MS = 30_000;
 const INTERVALO_RECONEXAO_MS = 5_000;
@@ -28,6 +31,12 @@ export interface AgentClientOptions {
    * Nao adianta reconectar nesse caso — quem chama decide como encerrar.
    */
   onRegistrationRejected: (reason: string) => void;
+  /**
+   * Pastas raiz onde o indice de projetos (`find`) procura. Cada subpasta
+   * imediata de cada raiz vira um "projeto" candidato. Vazio = agente nao
+   * encontra nada em `find`, mas `status` continua funcionando normalmente.
+   */
+  indexRoots: string[];
 }
 
 /**
@@ -40,6 +49,7 @@ export interface AgentClientOptions {
  */
 export class AgentClient {
   private readonly options: AgentClientOptions;
+  private readonly fileIndex: FileIndex;
   private socket: WebSocket | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -52,6 +62,13 @@ export class AgentClient {
 
   constructor(options: AgentClientOptions) {
     this.options = options;
+    this.fileIndex = new FileIndex(options.indexRoots);
+    if (options.indexRoots.length === 0) {
+      console.log("[agent] AGENT_INDEX_ROOTS vazio — find nao vai encontrar nada neste agente");
+    }
+    // O indice nao depende de estar conectado ao cerebro: comeca a escanear
+    // desde ja, para ja ter dados prontos quando o primeiro `find` chegar.
+    this.fileIndex.start();
   }
 
   connect(): void {
@@ -147,20 +164,44 @@ export class AgentClient {
   }
 
   private tratarComando(id: string, payload: CmdRequestPayload): void {
-    if (payload.command !== "status") {
-      console.warn(`[agent] comando desconhecido: ${payload.command}`);
-      this.enviar({
-        id,
-        type: "cmd.response",
-        payload: {
-          command: payload.command,
-          ok: false,
-          error: `comando desconhecido: ${payload.command}`,
-        } satisfies CmdResponsePayload,
-      });
+    if (payload.command === "status") {
+      this.responderStatus(id);
       return;
     }
 
+    if (payload.command === "find") {
+      this.responderFind(id, payload.query);
+      return;
+    }
+
+    if (payload.command === "listFiles") {
+      void this.responderListFiles(id, payload.path);
+      return;
+    }
+
+    if (payload.command === "shareFile") {
+      void this.responderShareFile(id, payload.path);
+      return;
+    }
+
+    // O tipo de `payload` hoje so cobre os 4 comandos acima, entao este ramo
+    // nao e alcancavel com o protocolo atual. Fica como rede de seguranca caso
+    // um cerebro de outra versao mande um comando que este agente ainda nao
+    // conhece — falha de forma legivel em vez de nao responder nada.
+    const comandoDesconhecido = (payload as { command: string }).command;
+    console.warn(`[agent] comando desconhecido: ${comandoDesconhecido}`);
+    this.enviar({
+      id,
+      type: "cmd.response",
+      payload: {
+        command: comandoDesconhecido,
+        ok: false,
+        error: `comando desconhecido: ${comandoDesconhecido}`,
+      } as unknown as CmdResponsePayload,
+    });
+  }
+
+  private responderStatus(id: string): void {
     console.log("[agent] respondendo cmd.request status");
     this.enviar({
       id,
@@ -175,6 +216,61 @@ export class AgentClient {
         },
       } satisfies CmdResponsePayload,
     });
+  }
+
+  private responderFind(id: string, query: string): void {
+    const matches = this.fileIndex.search(query);
+    console.log(`[agent] respondendo cmd.request find "${query}" — ${matches.length} match(es)`);
+    this.enviar({
+      id,
+      type: "cmd.response",
+      payload: { command: "find", ok: true, matches } satisfies CmdResponsePayload,
+    });
+  }
+
+  private async responderListFiles(id: string, caminho: string): Promise<void> {
+    console.log(`[agent] respondendo cmd.request listFiles "${caminho}"`);
+    try {
+      const entries = listarConteudo(caminho);
+      this.enviar({
+        id,
+        type: "cmd.response",
+        payload: { command: "listFiles", ok: true, entries } satisfies CmdResponsePayload,
+      });
+    } catch (err) {
+      this.enviar({
+        id,
+        type: "cmd.response",
+        payload: {
+          command: "listFiles",
+          ok: false,
+          entries: [],
+          error: mensagemDeErro(err),
+        } satisfies CmdResponsePayload,
+      });
+    }
+  }
+
+  private async responderShareFile(id: string, caminho: string): Promise<void> {
+    console.log(`[agent] respondendo cmd.request shareFile "${caminho}"`);
+    try {
+      const arquivo = await prepararEnvio(caminho);
+      this.enviar({
+        id,
+        type: "cmd.response",
+        payload: { command: "shareFile", ok: true, ...arquivo } satisfies CmdResponsePayload,
+      });
+    } catch (err) {
+      this.enviar({
+        id,
+        type: "cmd.response",
+        payload: {
+          command: "shareFile",
+          ok: false,
+          error: mensagemDeErro(err),
+        } satisfies CmdResponsePayload,
+      });
+    }
   }
 
   private enviarRegister(): void {
@@ -249,10 +345,15 @@ export class AgentClient {
     this.encerrando = true;
     this.pararHeartbeat();
     this.pararWatchdog();
+    this.fileIndex.stop();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.socket?.close();
   }
+}
+
+function mensagemDeErro(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
